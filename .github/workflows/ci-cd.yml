@@ -143,11 +143,13 @@ jobs:
           docker compose config -q
           install -d -m 700 /var/backups/mechman
           docker compose exec -T postgres sh -c \
-            'pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB"' \
+            'pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB"' </dev/null \
             | gzip > "/var/backups/mechman/predeploy-${release_sha}.sql.gz"
 
           docker build --pull --tag "$new_image" .
           APP_IMAGE="$new_image" docker compose up -d --no-build --wait app
+          deployed_container="$(APP_IMAGE="$new_image" docker compose ps -q app)"
+          test "$(docker inspect --format '{{.Config.Image}}' "$deployed_container")" = "$new_image"
           curl --fail --silent --show-error \
             --retry 10 --retry-delay 3 --retry-all-errors \
             https://api.207-180-203-160.nip.io/readyz
@@ -155,5 +157,5 @@ jobs:
           docker image tag "$new_image" mechman-crm-app:latest
           find /var/backups/mechman -type f -name 'predeploy-*.sql.gz' -mtime +14 -delete
           trap - ERR
-          docker compose ps
+          APP_IMAGE="$new_image" docker compose ps
           REMOTE
