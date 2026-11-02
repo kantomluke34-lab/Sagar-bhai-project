@@ -5,12 +5,11 @@ from datetime import date, datetime, time, timedelta
 from typing import Annotated, Any, Literal
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field, field_validator
 
 from .auth import create_access_token, current_user_dependency, verify_password
 from .config import Settings
-from .pairing import PairingState
 from .storage import BotStore
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -125,7 +124,7 @@ def _validate_business_slot(day: date, start: time, duration: int) -> tuple[date
     return begins, ends
 
 
-def build_router(settings: Settings, store: BotStore, pairing: PairingState) -> APIRouter:
+def build_router(settings: Settings, store: BotStore) -> APIRouter:
     router = APIRouter()
     get_current_user = current_user_dependency(settings, store)
 
@@ -288,29 +287,6 @@ def build_router(settings: Settings, store: BotStore, pairing: PairingState) -> 
         _: Annotated[dict[str, Any], Depends(get_current_user)],
     ) -> list[dict[str, Any]]:
         return store.recent_notification_deliveries()
-
-    @router.get("/api/whatsapp/status")
-    def whatsapp_status(
-        _: Annotated[dict[str, Any], Depends(get_current_user)],
-    ) -> dict[str, Any]:
-        snapshot = pairing.snapshot()
-        return {
-            "status": snapshot.status,
-            "updated_at": snapshot.updated_at,
-            "error": snapshot.error,
-            "has_qr": snapshot.qr_png is not None,
-        }
-
-    @router.get("/api/whatsapp/qr")
-    def whatsapp_qr(
-        _: Annotated[dict[str, Any], Depends(get_current_user)],
-    ) -> Response:
-        snapshot = pairing.snapshot()
-        if snapshot.qr_png is None:
-            raise HTTPException(status_code=404, detail="No active QR code")
-        return Response(
-            snapshot.qr_png, media_type="image/png", headers={"Cache-Control": "no-store"}
-        )
 
     @router.get("/healthz")
     def healthz() -> dict[str, Literal["ok"]]:

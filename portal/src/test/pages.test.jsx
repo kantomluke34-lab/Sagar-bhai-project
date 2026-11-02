@@ -4,6 +4,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 
 import BookingForm from '../pages/BookingForm'
+import Conversations from '../pages/Conversations'
 import Layout from '../components/Layout'
 import Sidebar from '../components/Sidebar'
 import CRM from '../pages/CRM'
@@ -11,7 +12,8 @@ import Dashboard from '../pages/Dashboard'
 import Login from '../pages/Login'
 import Meetings from '../pages/Meetings'
 import Settings from '../pages/Settings'
-import WhatsApp from '../pages/WhatsApp'
+import Templates from '../pages/Templates'
+import Waba from '../pages/Waba'
 
 const api = vi.hoisted(() => ({
   get: vi.fn(),
@@ -23,6 +25,7 @@ const publicApi = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn() }))
 const auth = vi.hoisted(() => ({
   login: vi.fn(),
   logout: vi.fn(),
+  loading: false,
   user: { full_name: 'Mechman Admin', role: 'admin' },
 }))
 
@@ -42,6 +45,8 @@ beforeEach(() => {
   publicApi.post.mockReset()
   auth.login.mockReset()
   auth.logout.mockReset()
+  auth.loading = false
+  auth.user = { full_name: 'Mechman Admin', role: 'admin' }
 })
 
 afterEach(cleanup)
@@ -49,6 +54,7 @@ afterEach(cleanup)
 describe('dashboard controls', () => {
   test('login submits credentials and reports an invalid login', async () => {
     const user = userEvent.setup()
+    auth.user = null
     auth.login.mockRejectedValueOnce({ response: { data: { detail: 'Invalid username or password' } } })
     renderRoute(<Login />, '/login')
 
@@ -148,27 +154,43 @@ describe('dashboard controls', () => {
     expect(await screen.findByText('Notification settings saved.')).toBeVisible()
   })
 
-  test('WhatsApp status and refresh call the API', async () => {
+  test('conversation inbox opens a thread, takes control, and sends a reply', async () => {
     const user = userEvent.setup()
-    api.get.mockResolvedValue({ data: { status: 'connected', has_qr: false } })
-    renderRoute(<WhatsApp />)
+    const row = { id: 8, contact_name: 'Asha Shah', phone: '919876543210', last_message: 'Need a CAM quote', mode: 'bot' }
+    api.get.mockImplementation((url) => Promise.resolve({ data: url === '/api/conversations/8' ? { ...row, mode: 'human', messages: [{ id: 1, direction: 'inbound', text: 'Need a CAM quote' }] } : [row] }))
+    api.post.mockResolvedValue({ data: { ok: true } })
+    renderRoute(<Conversations />)
 
-    expect(await screen.findByText('WhatsApp is linked.')).toBeVisible()
-    await user.click(screen.getByRole('button', { name: /Refresh/i }))
-    expect(api.get).toHaveBeenCalledTimes(2)
+    await user.click(await screen.findByText('Asha Shah'))
+    expect((await screen.findAllByText('Need a CAM quote')).length).toBe(2)
+    await user.type(screen.getByLabelText('Reply message'), 'We can help with that.')
+    await user.click(screen.getByRole('button', { name: /Send/i }))
+    expect(api.post).toHaveBeenCalledWith('/api/conversations/8/messages', { text: 'We can help with that.', template_id: null, parameters: [] })
   })
 
-  test('WhatsApp QR is loaded through the authenticated API client', async () => {
-    api.get.mockImplementation((url) => Promise.resolve({
-      data: url === '/api/whatsapp/qr'
-        ? new Blob(['qr'], { type: 'image/png' })
-        : { status: 'awaiting_scan', has_qr: true },
-    }))
-    renderRoute(<WhatsApp />)
+  test('WABA status renders Cloud API and webhook health', async () => {
+    api.get.mockResolvedValue({ data: { status: 'connected', display_phone_number: '+91 99999 99999', app_secret_configured: true, verify_token_configured: true, quality_rating: 'GREEN' } })
+    renderRoute(<Waba />)
 
-    const image = await screen.findByRole('img', { name: 'WhatsApp pairing QR code' })
-    expect(image).toHaveAttribute('src', 'blob:mock-qr')
-    expect(api.get).toHaveBeenCalledWith('/api/whatsapp/qr', { responseType: 'blob' })
+    expect(await screen.findByText('WhatsApp Business is connected.')).toBeVisible()
+    expect(screen.getByText('Meta webhook')).toBeVisible()
+    expect(api.get).toHaveBeenCalledWith('/api/waba/status')
+  })
+
+  test('templates sync, create a draft, and submit for approval', async () => {
+    const user = userEvent.setup()
+    const row = { id: 4, name: 'meeting_confirmed', language: 'en_US', category: 'UTILITY', body: 'Your meeting is confirmed.', status: 'draft' }
+    api.get.mockResolvedValue({ data: [row] })
+    api.post.mockResolvedValue({ data: { updated: 1 } })
+    renderRoute(<Templates />)
+
+    expect(await screen.findByText('meeting_confirmed')).toBeVisible()
+    await user.click(screen.getByRole('button', { name: /Sync Meta/i }))
+    expect(api.post).toHaveBeenCalledWith('/api/templates/sync')
+    await user.click(screen.getByRole('button', { name: /Submit/i }))
+    expect(api.post).toHaveBeenCalledWith('/api/templates/4/submit')
+    await user.click(screen.getByRole('button', { name: /New template/i }))
+    expect(screen.getByText('Create message template')).toBeVisible()
   })
 
   test('analytics renders all summary cards and recent meetings', async () => {

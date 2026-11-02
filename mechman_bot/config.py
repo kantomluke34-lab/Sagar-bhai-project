@@ -9,7 +9,6 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class Settings:
-    session_database: Path
     bot_database: Path
     team_alert_number: str
     public_booking_url: str
@@ -18,7 +17,6 @@ class Settings:
     admin_username: str
     admin_password: str
     meeting_duration_minutes: int
-    whatsapp_autostart: bool
     log_level: str
     dashboard_auth_enabled: bool = True
     cors_origins: tuple[str, ...] = (
@@ -29,9 +27,6 @@ class Settings:
     @classmethod
     def from_environment(cls) -> Settings:
         return cls(
-            session_database=Path(
-                os.environ.get("NEONIZE_SESSION_DB", "data/neonize-session.db")
-            ).expanduser(),
             bot_database=Path(os.environ.get("BOT_DATABASE", "data/mechman-bot.db")).expanduser(),
             team_alert_number=_digits_only(os.environ.get("TEAM_ALERT_NUMBER", "")),
             public_booking_url=os.environ.get(
@@ -42,8 +37,6 @@ class Settings:
             admin_username=os.environ.get("ADMIN_USERNAME", "admin"),
             admin_password=os.environ.get("ADMIN_PASSWORD", ""),
             meeting_duration_minutes=int(os.environ.get("MEETING_DURATION_MINUTES", "60")),
-            whatsapp_autostart=os.environ.get("WHATSAPP_AUTOSTART", "true").lower()
-            in {"1", "true", "yes", "on"},
             log_level=os.environ.get("LOG_LEVEL", "INFO").upper(),
             dashboard_auth_enabled=os.environ.get("DASHBOARD_AUTH_ENABLED", "true").lower()
             in {"1", "true", "yes", "on"},
@@ -58,7 +51,6 @@ class Settings:
         )
 
     def ensure_directories(self) -> None:
-        self.session_database.parent.mkdir(parents=True, exist_ok=True)
         self.bot_database.parent.mkdir(parents=True, exist_ok=True)
 
     def validate_web(self) -> None:

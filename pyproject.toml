@@ -10,10 +10,8 @@ requires-python = ">=3.10"
 dependencies = [
   "bcrypt>=4.1.0",
   "fastapi>=0.115.0",
-  "neonize==0.5.2",
   "PyJWT>=2.15.1",
   "python-multipart>=0.0.12",
-  "segno>=1.6.0",
   "uvicorn[standard]>=0.32.0",
 ]
 
@@ -25,7 +23,6 @@ dev = [
 ]
 
 [project.scripts]
-mechman-bot = "mechman_bot.__main__:main"
 mechman-dashboard = "mechman_bot.web:run"
 
 [tool.setuptools.packages.find]

@@ -5,7 +5,7 @@ A deterministic WhatsApp enquiry bot, custom meeting scheduler, and authenticate
 ..
 - Natural A–F WhatsApp flow for Products, Services, Solutions, About, Contact, and Book a meeting.
 - Open-ended qualification questions and a direct custom-booking link at the end of every branch.
-- Neonize linked-device pairing with a browser QR page; the transport is isolated for a later WABA adapter.
+- Operations modules and typed API contracts for the official Meta WhatsApp Cloud API integration.
 - Simple Name, Phone, Email, and Date/Time meeting form with server-generated availability, business-hour validation, and conflict protection.
 - Password-protected dashboard with analytics, meeting filters, status/stage management, CRM contacts, and audit history.
 - Configurable WhatsApp reminders before calls and 1-day/3-day follow-ups, with editable timing, templates, and persistent delivery history.
@@ -17,7 +17,7 @@ See [BOT_FLOW.md](BOT_FLOW.md) for the WhatsApp conversation and [SITE_DECODE.md
 
 ## Local setup
 
-Requirements: Python 3.10+, Node.js 20+, and a WhatsApp number that can be linked as a companion device.
+Requirements: Python 3.10+ and Node.js 20+.
 
 ```bash
 python3 -m venv .venv
@@ -49,17 +49,6 @@ Open:
 
 The first run creates the configured administrator. Changing `ADMIN_PASSWORD` later does not silently overwrite an existing account.
 
-## Pair WhatsApp
-
-1. Sign in to the dashboard.
-2. Open **WhatsApp Pairing**.
-3. On the phone, open **WhatsApp → Settings → Linked Devices → Link a Device**.
-4. Scan the displayed QR.
-
-The linked session is stored in `NEONIZE_SESSION_DB`. Treat that database as a credential, persist it on an encrypted/durable volume, and do not run two bot processes against the same session file.
-
-The CLI-only pairing flow remains available with `mechman-bot`, including `mechman-bot --pair-phone 919913789065` for a phone link code.
-
 ## Reminders and follow-ups
 
 Open **Settings** in the dashboard to configure:
@@ -74,7 +63,6 @@ Supported placeholders are `{name}`, `{date}`, `{time}`, `{minutes}`, and `{days
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `NEONIZE_SESSION_DB` | `data/neonize-session.db` | Persistent linked-device credentials |
 | `BOT_DATABASE` | `data/mechman-bot.db` | Conversations, CRM, meetings, users, and history |
 | `PUBLIC_BOOKING_URL` | `http://localhost:5173/book` | Booking link sent by the bot |
 | `CORS_ORIGINS` | local Vite origins | Comma-separated dashboard origins allowed to call the API |
@@ -84,7 +72,6 @@ Supported placeholders are `{name}`, `{date}`, `{time}`, `{minutes}`, and `{days
 | `ADMIN_USERNAME` | `admin` | Initial administrator username |
 | `ADMIN_PASSWORD` | none | Required; at least 10 characters |
 | `MEETING_DURATION_MINUTES` | `60` | Slot length: 30, 45, 60, 90, or 120 |
-| `WHATSAPP_AUTOSTART` | `true` | Start Neonize with the dashboard |
 | `TEAM_ALERT_NUMBER` | empty | Optional staff alert destination |
 | `LOG_LEVEL` | `INFO` | Application logging level |
 
@@ -96,7 +83,7 @@ Run the API and Vite separately for hot reload:
 
 ```bash
 # terminal 1
-WHATSAPP_AUTOSTART=false mechman-dashboard
+mechman-dashboard
 
 # terminal 2
 cd portal
@@ -135,8 +122,20 @@ docker run --env-file .env -p 8000:8000 -v mechman-data:/app/data mechman-crm
 The `portal/` directory can be deployed as a Vite project on Vercel. Set
 `VITE_API_URL` in Vercel to the public HTTPS URL of the FastAPI service, then add
 the Vercel site origin to `CORS_ORIGINS` on the backend. The backend still needs
-an always-on container host and a durable `/app/data` volume for SQLite and the
-WhatsApp session.
+an always-on container host and a durable `/app/data` volume for SQLite.
+
+The portal includes protected operations modules for the official Meta WhatsApp
+Cloud API deployment:
+
+- **Conversations** — inbound history, human takeover, return-to-bot, and manual replies.
+- **WABA Status** — sender and Cloud API connection health.
+- **Templates** — local drafts, Meta sync, editing, and approval submission.
+- **Webhook** — callback URL, verification/signature readiness, and event flow.
+
+These pages target the v3 backend endpoints. Typed request/response contracts live
+in `mechman_bot/waba_schemas.py`. The Meta webhook, sender, and persistence handlers
+must be supplied by the production WABA service; this repository no longer includes
+a linked-device WhatsApp transport.
 
 For a same-computer demo with the backend kept local, install a trusted local
 certificate and run the API as a macOS per-user HTTPS service:
@@ -159,13 +158,12 @@ after reboot. Stop the service with
 mechman_bot/
   content.py       website-grounded hard-coded copy
   flow.py          deterministic conversation state machine
-  whatsapp.py      Neonize transport adapter
   api.py           public booking and authenticated dashboard API
   auth.py          bcrypt and JWT authentication
   storage.py       SQLite repository, CRM, meetings, and audit history
-  pairing.py       thread-safe browser QR state
-  notifications.py persistent WhatsApp reminder/follow-up scheduler
-  web.py           FastAPI app and Neonize lifecycle
+  notifications.py transport-neutral reminder/follow-up scheduler
+  waba_schemas.py  typed Meta WABA request/response contracts
+  web.py           FastAPI application lifecycle
 portal/
   src/             React booking form and operations dashboard
 tests/
@@ -176,4 +174,7 @@ tests/
 
 ## Production path
 
-Neonize is a community WhatsApp automation SDK, not the official Meta Cloud API. Review WhatsApp/Meta terms before production use. The conversation engine and CRM do not depend on Neonize, so a future WABA webhook/sender can replace only the transport adapter.
+Use the official Meta WhatsApp Cloud API for production messaging. The local
+conversation engine, booking flow, CRM, and notification queue are transport-neutral.
+Connect the production WABA webhook and sender implementation to those services;
+the dashboard contracts and operations pages are already structured for the v3 API.

@@ -16,7 +16,6 @@ PASSWORD = "a-secure-local-password"
 
 def settings(tmp_path: Path) -> Settings:
     return Settings(
-        session_database=tmp_path / "neonize.db",
         bot_database=tmp_path / "bot.db",
         team_alert_number="",
         public_booking_url="http://testserver/book",
@@ -25,7 +24,6 @@ def settings(tmp_path: Path) -> Settings:
         admin_username="admin",
         admin_password=PASSWORD,
         meeting_duration_minutes=60,
-        whatsapp_autostart=False,
         log_level="INFO",
     )
 
@@ -127,7 +125,6 @@ def test_dashboard_routes_require_authentication(tmp_path: Path) -> None:
                 transport=transport, base_url="http://testserver"
             ) as client:
                 assert (await client.get("/api/dashboard/analytics")).status_code == 401
-                assert (await client.get("/api/whatsapp/status")).status_code == 401
 
     asyncio.run(exercise())
 

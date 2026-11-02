@@ -186,6 +186,79 @@ textarea { resize: vertical; }
 .toggle-row input { width: 44px; height: 24px; accent-color: var(--amber); }
 .settings-actions { display: flex; justify-content: space-between; align-items: center; gap: 18px; margin-bottom: 20px; }
 .settings-actions .alert { margin: 0; }
+.page-actions { display: flex; gap: 10px; }
+
+.conversation-shell { min-height: 640px; display: grid; grid-template-columns: minmax(280px, 380px) minmax(0, 1fr); gap: 18px; }
+.conversation-list, .conversation-detail { min-height: 640px; margin: 0; }
+.conversation-search { max-width: none; margin: 14px; }
+.conversation-row { position: relative; width: 100%; display: grid; grid-template-columns: 42px minmax(0, 1fr) 10px; gap: 12px; align-items: center; padding: 15px 16px; border: 0; border-top: 1px solid #edf0f4; color: var(--ink); background: #fff; cursor: pointer; text-align: left; }
+.conversation-row:hover, .conversation-row.active { background: #fffaf0; }
+.conversation-row.active { box-shadow: inset 3px 0 var(--amber); }
+.conversation-avatar { width: 42px; height: 42px; display: grid; place-items: center; border-radius: 50%; color: #805900; background: #fff0c3; font: 800 14px/1 'Manrope'; }
+.conversation-copy { min-width: 0; display: grid; gap: 3px; }
+.conversation-copy strong, .conversation-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conversation-copy small { color: var(--muted); }
+.conversation-copy em { color: #99a2b0; font-size: 10px; font-style: normal; }
+.control-dot { width: 8px; height: 8px; border-radius: 50%; }
+.control-dot.bot { background: #5b8cff; }
+.control-dot.human { background: var(--green); }
+.conversation-detail { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; overflow: hidden; }
+.conversation-head { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 17px 20px; border-bottom: 1px solid var(--line); }
+.conversation-head > div:first-child { display: grid; gap: 3px; }
+.conversation-head span { color: var(--muted); font-size: 12px; }
+.conversation-actions { display: flex; align-items: center; gap: 9px; }
+.control-label { display: inline-flex; align-items: center; gap: 6px; padding: 7px 9px; border-radius: 999px; background: #f1f3f6; white-space: nowrap; }
+.mobile-detail-close { display: none; }
+.message-stream { min-height: 0; display: flex; flex-direction: column; gap: 10px; padding: 22px; overflow-y: auto; background: #f7f8fa; }
+.message-bubble { width: fit-content; max-width: min(76%, 620px); padding: 11px 13px 8px; border-radius: 13px; box-shadow: 0 2px 6px rgba(20,30,48,.06); }
+.message-bubble p { margin: 0 0 5px; line-height: 1.45; white-space: pre-wrap; }
+.message-bubble small { display: block; color: #788395; font-size: 10px; text-align: right; }
+.message-bubble.inbound { align-self: flex-start; border: 1px solid var(--line); background: #fff; }
+.message-bubble.outbound { align-self: flex-end; background: #fff1c9; }
+.message-composer { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: end; padding: 15px; border-top: 1px solid var(--line); background: #fff; }
+.message-composer textarea { min-height: 46px; max-height: 130px; resize: vertical; }
+.conversation-placeholder { display: grid; place-items: center; align-content: center; color: #9aa4b3; text-align: center; }
+.conversation-placeholder h2 { margin: 13px 0 5px; color: var(--ink); font-size: 20px; }
+
+.waba-hero { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 18px; align-items: center; padding: 25px; margin-bottom: 18px; border: 1px solid #f0d9d8; border-radius: 16px; background: #fff7f6; }
+.waba-hero.connected { border-color: #c8ebdf; background: #f2fcf8; }
+.waba-icon { width: 54px; height: 54px; display: grid; place-items: center; border-radius: 15px; color: #9d3c3a; background: #fde7e6; }
+.waba-hero.connected .waba-icon { color: #116c58; background: #ddf7ef; }
+.waba-hero h2 { margin: 5px 0 3px; font-size: 22px; }
+.waba-hero p { margin: 0; color: var(--muted); }
+.health-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-bottom: 20px; }
+.health-item { display: flex; align-items: center; gap: 12px; padding: 17px; border: 1px solid var(--line); border-radius: 13px; background: #fff; }
+.health-item.healthy > span { color: var(--green); }
+.health-item.unhealthy > span { color: var(--red); }
+.health-item > span svg { width: 21px; height: 21px; }
+.health-item > div { min-width: 0; display: grid; gap: 3px; }
+.health-item small { color: var(--muted); }
+.health-item strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.webhook-panel { display: grid; gap: 20px; }
+.copy-field { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 9px; }
+.webhook-checks { display: flex; flex-wrap: wrap; gap: 9px 18px; color: var(--muted); font-size: 12px; }
+.webhook-checks span { display: flex; align-items: center; gap: 6px; }
+.webhook-checks svg { width: 16px; color: var(--green); }
+.webhook-health { grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 0; }
+.webhook-flow { display: grid; grid-template-columns: 1fr auto 1fr auto 1fr; align-items: center; gap: 16px; }
+.webhook-flow > div { min-height: 130px; display: grid; place-items: center; align-content: center; gap: 7px; padding: 18px; border: 1px solid var(--line); border-radius: 13px; text-align: center; background: #f7f8fa; }
+.webhook-flow > div svg { color: #9b6b00; }
+.webhook-flow > div small { color: var(--muted); }
+.webhook-flow > svg { color: #a1a9b5; transform: rotate(-90deg); }
+
+.template-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+.template-card { display: grid; align-content: start; padding: 21px; border: 1px solid var(--line); border-radius: 15px; background: #fff; box-shadow: 0 6px 24px rgba(22,32,51,.045); }
+.template-card header { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 12px; align-items: center; margin-bottom: 18px; }
+.template-card h2 { margin: 0 0 3px; overflow: hidden; text-overflow: ellipsis; font-size: 16px; white-space: nowrap; }
+.template-card header span:not(.status) { color: var(--muted); font-size: 11px; }
+.template-icon { width: 39px; height: 39px; display: grid; place-items: center; border-radius: 10px; color: #805900; background: #fff1c9; }
+.template-icon svg { width: 18px; }
+.template-card .template-header { margin-bottom: 6px; }
+.template-card > p { min-height: 66px; margin-bottom: 9px; color: #4f5b6d; line-height: 1.55; white-space: pre-wrap; }
+.template-card > small { color: var(--muted); }
+.template-card footer { display: flex; justify-content: flex-end; gap: 8px; padding-top: 18px; margin-top: 16px; border-top: 1px solid var(--line); }
+.template-form { display: grid; gap: 17px; margin-top: 26px; }
+.template-form .detail-grid { margin: 0; }
 .spin { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
@@ -212,6 +285,8 @@ textarea { resize: vertical; }
   .login-form-wrap { min-height: 560px; }
   .pair-panel { grid-template-columns: 1fr; }
   .settings-grid { grid-template-columns: 1fr; }
+  .health-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .conversation-shell { grid-template-columns: 310px minmax(0, 1fr); }
   .settings-actions.span-2 { grid-column: auto; }
   .qr-frame { max-width: 360px; width: 100%; margin: auto; }
 }
@@ -225,4 +300,21 @@ textarea { resize: vertical; }
   .login-story { display: none; }
   .login-form-wrap { min-height: 100vh; padding: 24px; }
   .drawer { padding: 26px 20px; }
+  .page-actions { width: 100%; }
+  .page-actions > button { flex: 1; }
+  .conversation-shell { min-height: 620px; display: block; }
+  .conversation-list, .conversation-detail { min-height: 620px; }
+  .conversation-detail { position: fixed; z-index: 60; inset: 62px 0 0; border: 0; border-radius: 0; }
+  .conversation-detail:has(.conversation-placeholder) { display: none; }
+  .mobile-detail-close { display: grid; }
+  .conversation-head { align-items: flex-start; }
+  .conversation-actions { flex-wrap: wrap; justify-content: flex-end; }
+  .control-label { display: none; }
+  .message-bubble { max-width: 88%; }
+  .health-grid, .template-grid { grid-template-columns: 1fr; }
+  .waba-hero { grid-template-columns: auto minmax(0, 1fr); }
+  .waba-hero > .status { grid-column: 1 / -1; justify-self: start; }
+  .copy-field { grid-template-columns: 1fr; }
+  .webhook-flow { grid-template-columns: 1fr; }
+  .webhook-flow > svg { margin: auto; transform: none; }
 }

@@ -1,9 +1,8 @@
-"""Combined FastAPI dashboard API and Neonize background process."""
+"""FastAPI booking and CRM application."""
 
 from __future__ import annotations
 
 import logging
-import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -16,10 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from .api import build_router
 from .auth import hash_password
 from .config import Settings
-from .notifications import NotificationScheduler
-from .pairing import PairingState
 from .storage import BotStore
-from .whatsapp import WhatsAppBot
 
 LOGGER = logging.getLogger(__name__)
 
@@ -34,25 +30,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             settings.admin_username,
             hash_password(settings.admin_password),
         )
-    pairing = PairingState(settings.bot_database.parent / "whatsapp-pairing-qr.png")
-    if not settings.whatsapp_autostart:
-        pairing.set_disconnected()
-
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
-        scheduler = None
-        if settings.whatsapp_autostart:
-            bot = WhatsAppBot(settings, store=store, pairing_state=pairing)
-            thread = threading.Thread(target=bot.run, name="neonize", daemon=True)
-            thread.start()
-            scheduler = NotificationScheduler(store, pairing, bot.send_text)
-            scheduler.start()
-            LOGGER.info("Neonize started in the background")
         try:
             yield
         finally:
-            if scheduler:
-                scheduler.stop()
             store.close()
 
     app = FastAPI(title="Mechman CRM", version="2.0.0", lifespan=lifespan)
@@ -64,10 +46,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_headers=["*"],
         allow_private_network=True,
     )
-    app.include_router(build_router(settings, store, pairing))
+    app.include_router(build_router(settings, store))
     app.state.settings = settings
     app.state.store = store
-    app.state.pairing = pairing
 
     dist = Path(__file__).resolve().parent.parent / "portal" / "dist"
     if dist.exists():

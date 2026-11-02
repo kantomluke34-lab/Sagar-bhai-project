@@ -1,7 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
 from mechman_bot.notifications import NotificationScheduler
-from mechman_bot.pairing import PairingState
 from mechman_bot.storage import BotStore
 
 
@@ -29,12 +28,9 @@ def test_scheduler_sends_reminder_once_and_persists_delivery() -> None:
     store = BotStore(":memory:")
     now = datetime(2027, 1, 12, 8, 30, tzinfo=timezone.utc)
     create_scheduled_meeting(store, now + timedelta(minutes=45))
-    pairing = PairingState()
-    pairing.set_connected()
     sent: list[tuple[str, str]] = []
     scheduler = NotificationScheduler(
         store,
-        pairing,
         lambda phone, message: sent.append((phone, message)),
     )
 
@@ -61,15 +57,15 @@ def test_followup_days_are_configurable() -> None:
     store.close()
 
 
-def test_scheduler_waits_for_whatsapp_connection() -> None:
+def test_scheduler_waits_for_transport_availability() -> None:
     store = BotStore(":memory:")
     now = datetime(2027, 1, 12, 8, 30, tzinfo=timezone.utc)
     create_scheduled_meeting(store, now + timedelta(minutes=30))
     sent: list[tuple[str, str]] = []
     scheduler = NotificationScheduler(
         store,
-        PairingState(),
         lambda phone, message: sent.append((phone, message)),
+        is_available=lambda: False,
     )
 
     assert scheduler.run_once(now) == 0

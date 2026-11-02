@@ -15,7 +15,7 @@ def _now() -> str:
 
 
 class BotStore:
-    """Single-process SQLite repository shared by Neonize and FastAPI."""
+    """Single-process SQLite repository for CRM, booking, and message state."""
 
     def __init__(self, database: str | Path = "data/mechman_bot.db") -> None:
         self.database = str(database)

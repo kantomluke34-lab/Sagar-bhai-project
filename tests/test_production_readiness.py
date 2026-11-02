@@ -14,7 +14,6 @@ PASSWORD = "production-readiness-password"
 
 def _settings(tmp_path: Path) -> Settings:
     return Settings(
-        session_database=tmp_path / "session.db",
         bot_database=tmp_path / "crm.db",
         team_alert_number="",
         public_booking_url="http://testserver/book",
@@ -23,7 +22,6 @@ def _settings(tmp_path: Path) -> Settings:
         admin_username="admin",
         admin_password=PASSWORD,
         meeting_duration_minutes=60,
-        whatsapp_autostart=False,
         log_level="INFO",
         cors_origins=("https://mechman-demo.vercel.app",),
     )
@@ -55,7 +53,6 @@ def test_all_dashboard_api_workflows_and_validation(tmp_path: Path) -> None:
                     "/api/crm/contacts",
                     "/api/settings/notifications",
                     "/api/settings/notifications/deliveries",
-                    "/api/whatsapp/status",
                 ]
                 for path in protected:
                     assert (await client.get(path)).status_code == 401, path
@@ -179,10 +176,5 @@ def test_all_dashboard_api_workflows_and_validation(tmp_path: Path) -> None:
                 assert analytics.json()["total_contacts"] == 1
                 assert analytics.json()["total_meetings"] == 1
                 assert analytics.json()["by_status"] == [{"status": "confirmed", "count": 1}]
-
-                whatsapp = await client.get("/api/whatsapp/status", headers=headers)
-                assert whatsapp.status_code == 200
-                assert whatsapp.json()["status"] == "disconnected"
-                assert (await client.get("/api/whatsapp/qr", headers=headers)).status_code == 404
 
     asyncio.run(exercise())

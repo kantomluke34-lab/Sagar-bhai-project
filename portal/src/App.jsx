@@ -4,12 +4,15 @@ import { AuthProvider, useAuth } from './contexts/AuthContext'
 import Layout from './components/Layout'
 
 const BookingForm = lazy(() => import('./pages/BookingForm'))
+const Conversations = lazy(() => import('./pages/Conversations'))
 const CRM = lazy(() => import('./pages/CRM'))
 const Dashboard = lazy(() => import('./pages/Dashboard'))
 const Login = lazy(() => import('./pages/Login'))
 const Meetings = lazy(() => import('./pages/Meetings'))
 const Settings = lazy(() => import('./pages/Settings'))
-const WhatsApp = lazy(() => import('./pages/WhatsApp'))
+const Templates = lazy(() => import('./pages/Templates'))
+const Waba = lazy(() => import('./pages/Waba'))
+const WebhookStatus = lazy(() => import('./pages/WebhookStatus'))
 
 function Protected() {
   const { user, loading } = useAuth()
@@ -29,9 +32,13 @@ export default function App() {
             <Route element={<Protected />}>
               <Route element={<Layout />}>
                 <Route index element={<Dashboard />} />
+                <Route path="/conversations" element={<Conversations />} />
                 <Route path="/meetings" element={<Meetings />} />
                 <Route path="/crm" element={<CRM />} />
-                <Route path="/whatsapp" element={<WhatsApp />} />
+                <Route path="/waba" element={<Waba />} />
+                <Route path="/templates" element={<Templates />} />
+                <Route path="/webhook-status" element={<WebhookStatus />} />
+                <Route path="/whatsapp" element={<Navigate to="/waba" replace />} />
                 <Route path="/settings" element={<Settings />} />
               </Route>
             </Route>

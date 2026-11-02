@@ -1,6 +1,6 @@
 # Mechman Solutions website decode
 
-Scope: only pages on `mechmansolution.com` were used for company and offering facts. The Neonize repository is used only for WhatsApp implementation details.
+Scope: only pages on `mechmansolution.com` were used for company and offering facts.
 
 ## Positioning
 

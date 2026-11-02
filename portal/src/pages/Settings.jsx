@@ -62,7 +62,7 @@ export default function Settings() {
       <PageTitle
         kicker="AUTOMATED OUTREACH"
         title="Reminder & follow-up settings"
-        subtitle="Messages are sent through the connected WhatsApp session and recorded once."
+        subtitle="Messages are sent through the official WABA transport and recorded once."
       />
       <form className="settings-grid" onSubmit={save}>
         <section className="panel settings-panel">
