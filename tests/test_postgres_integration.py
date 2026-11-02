@@ -16,7 +16,7 @@ DATABASE_URL = os.environ.get("TEST_DATABASE_URL", "")
 
 
 @pytest.mark.skipif(not DATABASE_URL, reason="TEST_DATABASE_URL is not configured")
-def test_postgres_auth_booking_and_calendar_api() -> None:
+def test_postgres_auth_booking_and_calendar_api(tmp_path) -> None:
     settings = Settings(
         database_url=DATABASE_URL,
         public_booking_url="https://crm.example.com/book",
@@ -33,7 +33,8 @@ def test_postgres_auth_booking_and_calendar_api() -> None:
         meta_api_version="v26.0",
         meta_webhook_verify_token="verify-token",
         meta_app_secret="app-secret",
-            campaign_poll_seconds=5,
+        campaign_poll_seconds=5,
+        media_root=str(tmp_path / "media"),
     )
     with TestClient(create_app(settings)) as client:
         ready = client.get("/readyz", headers={"X-Request-ID": "integration-ready"})
