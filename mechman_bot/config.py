@@ -29,6 +29,9 @@ class Settings:
     meta_app_secret: str
     dashboard_auth_enabled: bool = True
     notification_poll_seconds: int = 30
+    campaign_poll_seconds: int = 10
+    media_root: str = "/app/media"
+    max_media_bytes: int = 100 * 1024 * 1024
     log_format: str = "json"
     slow_request_ms: int = 1000
     cors_origins: tuple[str, ...] = (
@@ -68,6 +71,11 @@ class Settings:
             dashboard_auth_enabled=_truthy("DASHBOARD_AUTH_ENABLED", "true"),
             notification_poll_seconds=max(
                 10, int(os.environ.get("NOTIFICATION_POLL_SECONDS", "30"))
+            ),
+            campaign_poll_seconds=max(5, int(os.environ.get("CAMPAIGN_POLL_SECONDS", "10"))),
+            media_root=os.environ.get("MEDIA_ROOT", "/app/media"),
+            max_media_bytes=max(
+                1024 * 1024, int(os.environ.get("MAX_MEDIA_BYTES", str(100 * 1024 * 1024)))
             ),
             log_format=os.environ.get("LOG_FORMAT", "json").lower(),
             slow_request_ms=max(100, int(os.environ.get("SLOW_REQUEST_MS", "1000"))),

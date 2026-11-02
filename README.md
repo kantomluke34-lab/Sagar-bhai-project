@@ -1,6 +1,6 @@
 # Mechman Sales Meeting CRM
 
-A focused, single-administrator CRM for Mechman Solutions. It joins the official Meta WhatsApp Cloud API, the bilingual CAM Assistant flow, contact and meeting management, an internal calendar, message history, manual agent takeover, Meta template administration, and scheduled reminders/follow-ups.
+A focused, single-administrator CRM for Mechman Solutions. It joins the official Meta WhatsApp Cloud API, the bilingual CAM Assistant flow, contact and meeting management, an internal calendar, message history, manual agent takeover, Meta template administration, compliant WABA campaigns, and scheduled reminders/follow-ups.
 
 This repository is independent from Innovative Hair Studio. It contains no IHS branding, data, credentials, deployment configuration, or hair-studio domain modules.
 
@@ -14,6 +14,9 @@ This repository is independent from Innovative Hair Studio. It contains no IHS b
 - Free-form admin replies only inside Meta's 24-hour customer-service window.
 - Approved-template sending outside the service window.
 - Local draft, submission, status sync, and safe versioning for Meta templates.
+- WABA campaign workspace with CSV/XLS/XLSX imports, pasted numbers, CRM lists/segments, column mapping, personalization previews, fixed recipient snapshots, and recorded opt-in evidence.
+- Immediate, once, daily, and weekly approved-template sends with text or media headers, configurable throttling, pause/resume/cancel, failed-recipient retry, per-run history, and webhook-driven sent/delivered/read status.
+- Durable campaign media on a dedicated Docker volume and exportable per-recipient delivery logs.
 - Contact and sales-meeting CRM with stage, status, assignment, notes, and audit history.
 - Public booking form with server-calculated availability and conflict protection.
 - Internal month calendar; no Google or Outlook dependency.
@@ -24,7 +27,7 @@ This repository is independent from Innovative Hair Studio. It contains no IHS b
 - Backend-only Docker Compose deployment for Contabo with PostgreSQL 16 and Caddy-managed HTTPS.
 - Structured JSON application, request, webhook, scheduler, Caddy access, PostgreSQL slow-query, and bounded Docker logs.
 
-Explicitly excluded: invoices, quotations, packages, broad ERP workflows, marketing campaigns, multi-role access, and all IHS-specific features.
+Explicitly excluded: invoices, quotations, packages, broad ERP workflows, multi-role access, unofficial linked-device/QR transports, WhatsApp group messaging, and all IHS-specific features.
 
 ## Production WABA configuration
 
@@ -82,8 +85,10 @@ The application creates the initial schema and administrator on first startup. C
 | Calendar | `/api/meetings?date_from=…&date_to=…` |
 | CRM Contacts | `/api/crm/contacts` |
 | WhatsApp Inbox | `/api/conversations` |
+| WABA Campaigns | `/api/campaigns`, `/api/audiences` |
 | Message Templates | `/api/templates` |
 | Reminder Settings | `/api/settings/notifications` |
+| Account Password | `/api/auth/change-password` |
 | Booking Form | `/api/public/slots`, `/api/public/meetings` |
 | Meta Webhook | `/webhook` |
 
@@ -103,6 +108,14 @@ The application creates the initial schema and administrator on first startup. C
 - **Sync Meta** imports/updates status, category, content, ID, and rejection reason.
 - Only templates with `APPROVED` status are offered in the inbox.
 - The handoff's `mechman_welcome` template can be imported with **Sync Meta** after production secrets are configured. It must not be sent until Meta reports it as approved.
+
+## WABA campaign behavior
+
+- Business-initiated campaigns require an approved Meta template and recorded recipient opt-in.
+- Recipients can come from a CSV/XLS/XLSX import, pasted international numbers, or an opted-in CRM list/segment.
+- The audience is copied into an immutable snapshot when the campaign is created. Recurring runs reuse that snapshot for predictable auditing.
+- WhatsApp address-book discovery, linked-device QR login, and WhatsApp group sending are intentionally replaced by CRM contacts and lists because they are not official WABA capabilities.
+- Images, videos, and documents are supported through approved media-header templates. Files remain in the `campaign_media` Docker volume for recurring sends.
 
 ## Validation
 

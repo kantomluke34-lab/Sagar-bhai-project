@@ -45,6 +45,10 @@ WHATSAPP_ACCESS_TOKEN=
 WHATSAPP_WEBHOOK_VERIFY_TOKEN=
 META_APP_SECRET=
 
+CAMPAIGN_POLL_SECONDS=10
+MEDIA_ROOT=/app/media
+MAX_MEDIA_BYTES=104857600
+
 NOTIFICATION_POLL_SECONDS=30
 LOG_LEVEL=INFO
 LOG_FORMAT=json
@@ -52,6 +56,8 @@ SLOW_REQUEST_MS=1000
 ```
 
 Leaving the three WABA secrets blank intentionally disables outbound WhatsApp while CRM testing is in progress.
+
+The `campaign_media` Docker volume stores uploaded media used by scheduled and recurring campaigns. Include it in server backup planning; do not delete it during routine deployments.
 
 ## Start and verify
 
@@ -134,6 +140,7 @@ Copy backups off-server and test restoration periodically. Contabo Auto Backup i
 3. Subscribe the app to the `messages` webhook field.
 4. Sync templates and confirm `mechman_welcome` is actually `APPROVED`.
 5. Send one owner-authorized template to a test recipient and verify the delivery webhook.
+6. In CRM Contacts, record the test recipient's opt-in source/date, then create a one-recipient campaign and verify accepted, delivered, and read states.
 
 No production WhatsApp send is part of the initial CRM deployment.
 

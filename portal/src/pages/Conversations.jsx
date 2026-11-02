@@ -1,6 +1,7 @@
 import { Bot, Headphones, Loader2, RefreshCw, Search, Send, UserRound, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import api from '../api'
+import useDebouncedValue from '../hooks/useDebouncedValue'
 import { PageTitle, Status } from './Dashboard'
 
 const first = (...values) => values.find((value) => value !== undefined && value !== null && value !== '')
@@ -20,6 +21,7 @@ function normalizeDetail(data) {
 export default function Conversations() {
   const [rows, setRows] = useState([])
   const [q, setQ] = useState('')
+  const debouncedQ = useDebouncedValue(q)
   const [selected, setSelected] = useState(null)
   const [reply, setReply] = useState('')
   const [loading, setLoading] = useState(true)
@@ -29,14 +31,14 @@ export default function Conversations() {
   async function load() {
     setLoading(true); setError('')
     try {
-      const { data } = await api.get('/api/conversations', { params: { q } })
+      const { data } = await api.get('/api/conversations', { params: { q: debouncedQ } })
       setRows(Array.isArray(data) ? data : data?.items || data?.conversations || [])
     } catch (requestError) {
       setError(requestError.response?.data?.detail || 'Could not load WhatsApp conversations.')
     } finally { setLoading(false) }
   }
 
-  useEffect(() => { const timer = setTimeout(load, 250); return () => clearTimeout(timer) }, [q])
+  useEffect(() => { load() }, [debouncedQ])
 
   async function open(id) {
     setError('')
@@ -47,8 +49,15 @@ export default function Conversations() {
   async function changeControl(action) {
     setBusy(true); setError('')
     try {
-      await api.post(`/api/conversations/${selected.id}/${action}`)
-      await open(selected.id); await load()
+      const { data } = await api.post(`/api/conversations/${selected.id}/${action}`)
+      setSelected((current) => ({
+        ...current,
+        ...data,
+        is_taken_over: action === 'take-over',
+        human_takeover: action === 'take-over',
+        control_mode: action === 'take-over' ? 'human' : 'bot',
+      }))
+      await Promise.all([open(selected.id), load()])
     } catch (requestError) { setError(requestError.response?.data?.detail || 'Could not change conversation control.') }
     finally { setBusy(false) }
   }
@@ -71,13 +80,13 @@ export default function Conversations() {
     <div className="conversation-shell">
       <section className="conversation-list panel no-pad">
         <label className="search conversation-search"><Search size={17} /><input value={q} onChange={(event) => setQ(event.target.value)} placeholder="Search name, phone, or message…" aria-label="Search conversations" /></label>
-        {loading ? <div className="empty"><Loader2 className="spin" size={20} /> Loading conversations…</div> : rows.length ? rows.map((row) => (
+        <div className="conversation-rows">{loading ? <div className="empty"><Loader2 className="spin" size={20} /> Loading conversations…</div> : rows.length ? rows.map((row) => (
           <button key={row.id} className={`conversation-row ${selected?.id === row.id ? 'active' : ''}`} onClick={() => open(row.id)}>
             <span className="conversation-avatar">{person(row).slice(0, 1).toUpperCase()}</span>
             <span className="conversation-copy"><strong>{person(row)}</strong><small>{preview(row)}</small><em>{when(first(row.last_message_at, row.updated_at, row.created_at))}</em></span>
             <span className={`control-dot ${isHuman(row) ? 'human' : 'bot'}`} title={isHuman(row) ? 'Human controlled' : 'Bot controlled'} />
           </button>
-        )) : <div className="empty">No conversations match this search.</div>}
+        )) : <div className="empty">No conversations match this search.</div>}</div>
       </section>
       <section className="conversation-detail panel no-pad">
         {selected ? <>

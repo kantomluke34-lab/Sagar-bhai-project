@@ -1,4 +1,4 @@
-import { BellRing, CheckCircle2, Save } from 'lucide-react'
+import { BellRing, CheckCircle2, KeyRound, Save, ShieldCheck } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import api from '../api'
 import { PageTitle } from './Dashboard'
@@ -15,6 +15,10 @@ export default function Settings() {
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState('')
   const [error, setError] = useState('')
+  const [password, setPassword] = useState({ current_password: '', new_password: '', confirm_password: '' })
+  const [passwordBusy, setPasswordBusy] = useState(false)
+  const [passwordError, setPasswordError] = useState('')
+  const [passwordNotice, setPasswordNotice] = useState('')
 
   useEffect(() => {
     Promise.all([
@@ -55,6 +59,22 @@ export default function Settings() {
     }
   }
 
+  async function changePassword(event) {
+    event.preventDefault()
+    setPasswordBusy(true); setPasswordError(''); setPasswordNotice('')
+    if (password.new_password !== password.confirm_password) {
+      setPasswordError('New passwords do not match.'); setPasswordBusy(false); return
+    }
+    try {
+      const { data } = await api.post('/api/auth/change-password', password)
+      setPassword({ current_password: '', new_password: '', confirm_password: '' })
+      setPasswordNotice(data.message || 'Password changed successfully.')
+    } catch (requestError) {
+      const detail = requestError.response?.data?.detail
+      setPasswordError(Array.isArray(detail) ? detail[0]?.msg : detail || 'Password could not be changed.')
+    } finally { setPasswordBusy(false) }
+  }
+
   if (!form) return <div className="screen-center">Loading settings…</div>
 
   return (
@@ -87,6 +107,15 @@ export default function Settings() {
       <section className="panel">
         <div className="panel-title"><h2>Recent notification deliveries</h2></div>
         <div className="table-wrap"><table><thead><tr><th>Contact</th><th>Type</th><th>Meeting</th><th>Sent</th></tr></thead><tbody>{deliveries.map((item) => <tr key={item.id}><td><strong>{item.name}</strong><small>{item.recipient}</small></td><td>{item.notification_key.replaceAll('_', ' ')}</td><td>{when(item.start_at)}</td><td>{when(item.sent_at)}</td></tr>)}</tbody></table>{!deliveries.length && <div className="empty">No automated messages sent yet.</div>}</div>
+      </section>
+      <section className="panel account-settings">
+        <div className="settings-heading"><ShieldCheck /><div><h2>Account security</h2><p>Change the password used to access this CRM.</p></div></div>
+        <form className="password-form" onSubmit={changePassword}>
+          <label>Current password<input aria-label="Current password" required type="password" autoComplete="current-password" value={password.current_password} onChange={(event) => setPassword({ ...password, current_password: event.target.value })} /></label>
+          <label>New password<input aria-label="New password" required minLength="10" type="password" autoComplete="new-password" value={password.new_password} onChange={(event) => setPassword({ ...password, new_password: event.target.value })} /><small>Use at least 10 characters.</small></label>
+          <label>Confirm new password<input aria-label="Confirm new password" required minLength="10" type="password" autoComplete="new-password" value={password.confirm_password} onChange={(event) => setPassword({ ...password, confirm_password: event.target.value })} /></label>
+          <div className="password-actions"><div>{passwordError && <div className="alert error">{passwordError}</div>}{passwordNotice && <div className="alert success">{passwordNotice}</div>}</div><button className="primary-button" disabled={passwordBusy}><KeyRound size={17} />{passwordBusy ? 'Changing…' : 'Change password'}</button></div>
+        </form>
       </section>
       <div className="notice"><strong>Available placeholders</strong><p>{'{name}, {date}, {time}, {minutes}, {days}'}</p></div>
     </>

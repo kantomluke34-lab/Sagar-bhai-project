@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
-from datetime import date, datetime, time, timedelta
+import uuid
+from datetime import UTC, date, datetime, time, timedelta
+from pathlib import Path
 from typing import Annotated, Any, Literal
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from .auth import create_access_token, current_user_dependency, verify_password
+from .auth import create_access_token, current_user_dependency, hash_password, verify_password
+from .campaigns import infer_media_type, normalize_phone, parse_recipient_file
 from .config import Settings
 from .repository import CRMRepository
 from .waba import WABAClient, WABAError
@@ -25,6 +29,20 @@ LEAD_STAGES = {"new", "qualified", "proposal", "won", "lost"}
 class LoginRequest(BaseModel):
     username: str
     password: str
+
+
+class PasswordChange(BaseModel):
+    current_password: str = Field(min_length=1, max_length=256)
+    new_password: str = Field(min_length=10, max_length=256)
+    confirm_password: str = Field(min_length=10, max_length=256)
+
+    @model_validator(mode="after")
+    def passwords_match(self) -> PasswordChange:
+        if self.new_password != self.confirm_password:
+            raise ValueError("New passwords do not match")
+        if self.new_password == self.current_password:
+            raise ValueError("New password must be different from the current password")
+        return self
 
 
 class PublicMeetingCreate(BaseModel):
@@ -84,6 +102,7 @@ class TemplateDraft(BaseModel):
     footer: str | None = Field(default=None, max_length=60)
     buttons: list[dict[str, Any]] = Field(default_factory=list)
     variables: list[str] = Field(default_factory=list)
+    header_format: Literal["NONE", "TEXT"] = "NONE"
 
     @model_validator(mode="after")
     def examples_match_body_variables(self) -> TemplateDraft:
@@ -93,6 +112,73 @@ class TemplateDraft(BaseModel):
             raise ValueError("Body variables must be sequential: {{1}}, {{2}}, and so on")
         if len(self.variables) != len(expected):
             raise ValueError("Provide one variable example for each body variable")
+        return self
+
+
+class RecipientListDraft(BaseModel):
+    name: str = Field(min_length=2, max_length=160)
+    description: str | None = Field(default=None, max_length=1000)
+    list_type: Literal["static", "dynamic"] = "static"
+    filters: dict[str, str] = Field(default_factory=dict)
+    member_ids: list[int] = Field(default_factory=list, max_length=10_000)
+
+    @model_validator(mode="after")
+    def validate_list(self) -> RecipientListDraft:
+        if self.list_type == "dynamic" and not any(self.filters.values()):
+            raise ValueError("A dynamic segment requires at least one filter")
+        return self
+
+
+class CampaignRecipientInput(BaseModel):
+    phone: str
+    name: str | None = Field(default=None, max_length=160)
+    variables: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("phone")
+    @classmethod
+    def valid_phone(cls, value: str) -> str:
+        normalized = normalize_phone(value)
+        if not normalized:
+            raise ValueError("Enter a 7-15 digit international phone number")
+        return normalized
+
+
+class CampaignCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=180)
+    template_id: int
+    source_type: Literal["csv", "paste", "list"]
+    list_id: int | None = None
+    recipients: list[CampaignRecipientInput] = Field(default_factory=list, max_length=10_000)
+    consent_confirmed: bool = False
+    consent_source: str | None = Field(default=None, max_length=120)
+    consent_captured_at: datetime | None = None
+    schedule_type: Literal["once", "daily", "weekly"] = "once"
+    scheduled_at: datetime
+    parameter_mapping: list[str] = Field(default_factory=list, max_length=20)
+    asset_id: int | None = None
+    throttle_seconds: float = Field(default=1, ge=0, le=10)
+
+    @model_validator(mode="after")
+    def validate_source(self) -> CampaignCreate:
+        if self.source_type == "list" and not self.list_id:
+            raise ValueError("Choose a CRM audience")
+        if self.source_type in {"csv", "paste"}:
+            if not self.recipients:
+                raise ValueError("Upload at least one valid CSV/XLSX recipient")
+            if not self.consent_confirmed or not self.consent_source or not self.consent_captured_at:
+                raise ValueError("CSV recipients require consent confirmation, source, and date")
+        return self
+
+
+class ContactConsentUpdate(BaseModel):
+    status: Literal["unknown", "opted_in", "opted_out"]
+    source: str | None = Field(default=None, max_length=120)
+    captured_at: datetime | None = None
+
+    @model_validator(mode="after")
+    def require_opt_in_evidence(self) -> ContactConsentUpdate:
+        if self.status == "opted_in" and (not self.source or not self.captured_at):
+            raise ValueError("Opt-in requires a consent source and captured date")
         return self
 
 
@@ -144,6 +230,19 @@ def build_router(settings: Settings, repository: CRMRepository, waba: WABAClient
     @router.get("/api/auth/me")
     async def me(user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
         return {key: user[key] for key in ("id", "username", "full_name", "role")}
+
+    @router.post("/api/auth/change-password")
+    async def change_password(
+        payload: PasswordChange, user: dict[str, Any] = Depends(current_user)
+    ) -> dict[str, str]:
+        if not verify_password(payload.current_password, str(user["password_hash"])):
+            raise HTTPException(status_code=400, detail="Current password is incorrect")
+        changed = await repository.update_user_password(
+            int(user["id"]), hash_password(payload.new_password)
+        )
+        if not changed:
+            raise HTTPException(status_code=404, detail="Account not found")
+        return {"message": "Password changed successfully"}
 
     @router.get("/api/public/config")
     async def public_config() -> dict[str, Any]:
@@ -258,6 +357,61 @@ def build_router(settings: Settings, repository: CRMRepository, waba: WABAClient
         if not result:
             raise HTTPException(status_code=404, detail="Contact not found")
         return result
+
+    @router.put("/api/crm/contact-consent/{contact_id}")
+    async def update_contact_consent(
+        contact_id: int,
+        payload: ContactConsentUpdate,
+        user: dict[str, Any] = Depends(current_user),
+    ) -> dict[str, Any]:
+        contact = await repository.get_contact(contact_id)
+        if not contact:
+            raise HTTPException(status_code=404, detail="Contact not found")
+        await repository.set_contact_consent(
+            contact_id,
+            payload.status,
+            payload.source,
+            payload.captured_at,
+            {"updated_by": user["username"], "method": "crm"},
+        )
+        return (await repository.get_contact(contact_id)) or {}
+
+    @router.get("/api/audiences")
+    async def audiences(_: dict[str, Any] = Depends(current_user)) -> list[dict[str, Any]]:
+        return await repository.list_recipient_lists()
+
+    @router.post("/api/audiences", status_code=status.HTTP_201_CREATED)
+    async def create_audience(
+        payload: RecipientListDraft, _: dict[str, Any] = Depends(current_user)
+    ) -> dict[str, Any]:
+        try:
+            return await repository.create_recipient_list(payload.model_dump())
+        except Exception as exc:
+            if "unique" in str(exc).lower():
+                raise HTTPException(status_code=409, detail="Audience name already exists") from exc
+            raise
+
+    @router.put("/api/audiences/{list_id}")
+    async def update_audience(
+        list_id: int,
+        payload: RecipientListDraft,
+        _: dict[str, Any] = Depends(current_user),
+    ) -> dict[str, Any]:
+        result = await repository.update_recipient_list(list_id, payload.model_dump())
+        if not result:
+            raise HTTPException(status_code=404, detail="Audience not found")
+        return result
+
+    @router.delete(
+        "/api/audiences/{list_id}",
+        status_code=status.HTTP_204_NO_CONTENT,
+        response_model=None,
+    )
+    async def delete_audience(
+        list_id: int, _: dict[str, Any] = Depends(current_user)
+    ) -> None:
+        if not await repository.delete_recipient_list(list_id):
+            raise HTTPException(status_code=404, detail="Audience not found")
 
     @router.get("/api/conversations")
     async def conversations(
@@ -424,6 +578,7 @@ def build_router(settings: Settings, repository: CRMRepository, waba: WABAClient
                     "meta_template_id": str(item.get("id", "")),
                     "category": str(item.get("category", "UTILITY")),
                     "header": components.get("HEADER", {}).get("text"),
+                    "header_format": str(components.get("HEADER", {}).get("format", "NONE")),
                     "body": str(body_component.get("text", "Imported from Meta")),
                     "footer": components.get("FOOTER", {}).get("text"),
                     "buttons": components.get("BUTTONS", {}).get("buttons", []),
@@ -433,6 +588,166 @@ def build_router(settings: Settings, repository: CRMRepository, waba: WABAClient
                 },
             )
         return {"synced": len(remote)}
+
+    @router.post("/api/campaigns/import/preview")
+    async def preview_campaign_import(
+        upload: UploadFile = File(...), _: dict[str, Any] = Depends(current_user)
+    ) -> dict[str, Any]:
+        content = await upload.read()
+        if len(content) > 8 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="Recipient file is limited to 8 MB")
+        try:
+            return parse_recipient_file(upload.filename or "recipients.csv", content)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @router.post("/api/campaigns/media", status_code=status.HTTP_201_CREATED)
+    async def upload_campaign_media(
+        upload: UploadFile = File(...), _: dict[str, Any] = Depends(current_user)
+    ) -> dict[str, Any]:
+        content = await upload.read()
+        if not content:
+            raise HTTPException(status_code=422, detail="Uploaded media file is empty")
+        media_type = infer_media_type(upload.content_type or "application/octet-stream")
+        if not media_type:
+            raise HTTPException(status_code=422, detail="Use an image, video, PDF, DOC, or DOCX")
+        type_limit = {
+            "IMAGE": 5 * 1024 * 1024,
+            "VIDEO": 16 * 1024 * 1024,
+            "DOCUMENT": settings.max_media_bytes,
+        }.get(media_type or "", 0)
+        if len(content) > type_limit:
+            raise HTTPException(
+                status_code=413,
+                detail=f"{str(media_type).title()} is limited to {type_limit // (1024 * 1024)} MB",
+            )
+        mime_type = upload.content_type or "application/octet-stream"
+        suffix = Path(upload.filename or "media").suffix.lower()[:10]
+        storage_name = f"{uuid.uuid4().hex}{suffix}"
+        media_root = Path(settings.media_root)
+        media_root.mkdir(parents=True, exist_ok=True)
+        (media_root / storage_name).write_bytes(content)
+        return await repository.save_media_asset(
+            {
+                "original_name": Path(upload.filename or "media").name[:255],
+                "storage_name": storage_name,
+                "mime_type": mime_type,
+                "size_bytes": len(content),
+                "sha256": hashlib.sha256(content).hexdigest(),
+            }
+        )
+
+    @router.get("/api/campaigns")
+    async def campaigns(_: dict[str, Any] = Depends(current_user)) -> list[dict[str, Any]]:
+        return await repository.list_campaigns()
+
+    @router.get("/api/campaigns/{campaign_id}")
+    async def campaign_detail(
+        campaign_id: int, _: dict[str, Any] = Depends(current_user)
+    ) -> dict[str, Any]:
+        result = await repository.get_campaign(campaign_id)
+        if not result:
+            raise HTTPException(status_code=404, detail="Campaign not found")
+        return result
+
+    @router.post("/api/campaigns", status_code=status.HTTP_201_CREATED)
+    async def create_campaign(
+        payload: CampaignCreate, user: dict[str, Any] = Depends(current_user)
+    ) -> dict[str, Any]:
+        template = await repository.get_template(payload.template_id)
+        if not template or str(template.get("status", "")).upper() != "APPROVED":
+            raise HTTPException(status_code=422, detail="Choose an approved Meta template")
+        required = max(
+            [int(value) for value in re.findall(r"\{\{(\d+)\}\}", template["body"])],
+            default=0,
+        )
+        if len(payload.parameter_mapping) != required:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Template requires {required} mapped variable(s)",
+            )
+        header_format = str(template.get("header_format") or "NONE").upper()
+        if header_format in {"IMAGE", "VIDEO", "DOCUMENT"}:
+            if not payload.asset_id:
+                raise HTTPException(status_code=422, detail=f"{header_format.title()} template requires media")
+            asset = await repository.get_media_asset(payload.asset_id)
+            if not asset or infer_media_type(asset["mime_type"]) != header_format:
+                raise HTTPException(status_code=422, detail=f"Upload matching {header_format.lower()} media")
+        elif payload.asset_id:
+            raise HTTPException(status_code=422, detail="Selected template does not accept media")
+
+        if payload.source_type == "list":
+            rows = await repository.resolve_recipient_list(int(payload.list_id or 0))
+            recipients = [
+                {
+                    "phone": row["phone"],
+                    "name": row["name"],
+                    "variables": row,
+                    "consent_source": row["consent_source"],
+                    "consent_captured_at": row["consent_captured_at"],
+                }
+                for row in rows
+            ]
+        else:
+            recipients = [
+                {
+                    "phone": row.phone,
+                    "name": row.name or row.variables.get("name"),
+                    "variables": row.variables,
+                    "consent_source": payload.consent_source,
+                    "consent_captured_at": payload.consent_captured_at,
+                    "consent_evidence": {"method": "csv_confirmation", "confirmed_by": user["username"]},
+                }
+                for row in payload.recipients
+            ]
+        if not recipients:
+            raise HTTPException(status_code=422, detail="Audience contains no opted-in recipients")
+        scheduled_at = payload.scheduled_at
+        if scheduled_at.tzinfo is None:
+            scheduled_at = scheduled_at.replace(tzinfo=IST)
+        return await repository.create_campaign(
+            {
+                "name": payload.name,
+                "template_id": payload.template_id,
+                "list_id": payload.list_id,
+                "asset_id": payload.asset_id,
+                "source_type": payload.source_type,
+                "schedule_type": payload.schedule_type,
+                "scheduled_at": scheduled_at.astimezone(UTC),
+                "timezone": "Asia/Kolkata",
+                "status": "scheduled",
+                "parameter_mapping": payload.parameter_mapping,
+                "throttle_seconds": payload.throttle_seconds,
+                "created_by": str(user["username"]),
+            },
+            recipients,
+        )
+
+    @router.post("/api/campaigns/{campaign_id}/{action}")
+    async def campaign_action(
+        campaign_id: int,
+        action: Literal["pause", "resume", "cancel"],
+        _: dict[str, Any] = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            result = await repository.set_campaign_status(campaign_id, action)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if not result:
+            raise HTTPException(status_code=404, detail="Campaign not found")
+        return result
+
+    @router.post(
+        "/api/campaigns/{campaign_id}/deliveries/retry-failed",
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def retry_failed_campaign(
+        campaign_id: int, user: dict[str, Any] = Depends(current_user)
+    ) -> dict[str, Any]:
+        try:
+            return await repository.retry_failed_campaign(campaign_id, str(user["username"]))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @router.get("/api/settings/notifications")
     async def notification_settings(

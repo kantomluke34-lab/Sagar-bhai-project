@@ -45,6 +45,8 @@ services:
     networks: [internal, web]
     init: true
     read_only: true
+    volumes:
+      - campaign_media:/app/media
     tmpfs:
       - /tmp:size=64m,mode=1777
     security_opt:
@@ -80,6 +82,7 @@ volumes:
   postgres_data:
   caddy_data:
   caddy_config:
+  campaign_media:
 
 networks:
   internal:

@@ -56,8 +56,12 @@ class WebhookProcessor:
     async def _process_statuses(self, statuses: list[dict[str, Any]]) -> None:
         for status in statuses:
             if status.get("id") and status.get("status"):
+                errors = status.get("errors") or []
+                first_error = errors[0] if errors else {}
+                detail = first_error.get("error_data", {}).get("details")
+                error = detail or first_error.get("message") or first_error.get("title")
                 await self.repository.update_message_status(
-                    str(status["id"]), str(status["status"])
+                    str(status["id"]), str(status["status"]), str(error) if error else None
                 )
 
     async def _process_messages(self, value: dict[str, Any]) -> None:

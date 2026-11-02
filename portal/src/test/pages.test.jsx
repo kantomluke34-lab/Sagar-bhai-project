@@ -5,6 +5,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 
 import BookingForm from '../pages/BookingForm'
+import Campaigns from '../pages/Campaigns'
 import Conversations from '../pages/Conversations'
 import Layout from '../components/Layout'
 import Sidebar from '../components/Sidebar'
@@ -21,6 +22,7 @@ const api = vi.hoisted(() => ({
   post: vi.fn(),
   patch: vi.fn(),
   put: vi.fn(),
+  delete: vi.fn(),
 }))
 const publicApi = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn() }))
 const auth = vi.hoisted(() => ({
@@ -42,6 +44,7 @@ beforeEach(() => {
   api.post.mockReset()
   api.patch.mockReset()
   api.put.mockReset()
+  api.delete.mockReset()
   publicApi.get.mockReset()
   publicApi.post.mockReset()
   auth.login.mockReset()
@@ -156,18 +159,59 @@ describe('dashboard controls', () => {
     expect(await screen.findByText('Notification settings saved.')).toBeVisible()
   })
 
+  test('settings verifies and changes the account password', async () => {
+    const user = userEvent.setup()
+    const settings = {
+      reminder_enabled: true, reminder_minutes_before: 60, followup_enabled: true,
+      followup_days: [1], reminder_template: 'Reminder', followup_template: 'Follow up',
+    }
+    api.get.mockImplementation((url) => Promise.resolve({ data: url.endsWith('/deliveries') ? [] : settings }))
+    api.post.mockResolvedValue({ data: { message: 'Password changed successfully' } })
+    renderRoute(<Settings />)
+
+    await user.type(await screen.findByLabelText('Current password'), 'old-password')
+    await user.type(screen.getByLabelText('New password'), 'new-password-123')
+    await user.type(screen.getByLabelText('Confirm new password'), 'new-password-123')
+    await user.click(screen.getByRole('button', { name: /Change password/i }))
+
+    expect(api.post).toHaveBeenCalledWith('/api/auth/change-password', {
+      current_password: 'old-password', new_password: 'new-password-123', confirm_password: 'new-password-123',
+    })
+    expect(await screen.findByText('Password changed successfully')).toBeVisible()
+  })
+
   test('conversation inbox opens a thread, takes control, and sends a reply', async () => {
     const user = userEvent.setup()
     const row = { id: 8, contact_name: 'Asha Shah', phone: '919876543210', last_message: 'Need a CAM quote', mode: 'bot' }
-    api.get.mockImplementation((url) => Promise.resolve({ data: url === '/api/conversations/8' ? { ...row, mode: 'human', messages: [{ id: 1, direction: 'inbound', text: 'Need a CAM quote' }] } : [row] }))
-    api.post.mockResolvedValue({ data: { ok: true } })
+    let takenOver = false
+    api.get.mockImplementation((url) => Promise.resolve({ data: url === '/api/conversations/8' ? { ...row, is_taken_over: takenOver, messages: [{ id: 1, direction: 'inbound', text: 'Need a CAM quote' }] } : [{ ...row, is_taken_over: takenOver }] }))
+    api.post.mockImplementation((url) => {
+      if (url.endsWith('/take-over')) takenOver = true
+      return Promise.resolve({ data: { is_taken_over: takenOver } })
+    })
     renderRoute(<Conversations />)
 
     await user.click(await screen.findByText('Asha Shah'))
     expect((await screen.findAllByText('Need a CAM quote')).length).toBe(2)
+    await user.click(screen.getByRole('button', { name: /Take over/i }))
+    expect(api.post).toHaveBeenCalledWith('/api/conversations/8/take-over')
     await user.type(screen.getByLabelText('Reply message'), 'We can help with that.')
     await user.click(screen.getByRole('button', { name: /Send/i }))
     expect(api.post).toHaveBeenCalledWith('/api/conversations/8/messages', { text: 'We can help with that.', template_id: null, parameters: [] })
+  })
+
+  test('campaign workspace exposes CSV, pasted-number, and CRM audience sources', async () => {
+    const user = userEvent.setup()
+    api.get.mockImplementation((url) => {
+      if (url === '/api/templates') return Promise.resolve({ data: [{ id: 1, name: 'approved_offer', status: 'APPROVED', body: 'Hello', header_format: 'NONE' }] })
+      return Promise.resolve({ data: [] })
+    })
+    renderRoute(<Campaigns />)
+
+    await user.click(await screen.findByRole('button', { name: /New campaign/i }))
+    expect(screen.getByRole('button', { name: /CSV \/ Excel/i })).toBeVisible()
+    expect(screen.getByRole('button', { name: /Paste numbers/i })).toBeVisible()
+    expect(screen.getByRole('button', { name: /CRM audience/i })).toBeVisible()
   })
 
   test('WABA status renders Cloud API and webhook health', async () => {

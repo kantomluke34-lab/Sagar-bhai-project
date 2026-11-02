@@ -17,6 +17,7 @@ from sqlalchemy import text
 
 from .api import build_router
 from .auth import hash_password
+from .campaigns import CampaignScheduler
 from .config import Settings
 from .database import Database
 from .logging_config import configure_logging
@@ -36,17 +37,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     waba = WABAClient(settings)
     processor = WebhookProcessor(settings, repository, waba)
     scheduler = NotificationScheduler(repository, waba, settings.notification_poll_seconds)
+    campaign_scheduler = CampaignScheduler(
+        repository, waba, settings.media_root, settings.campaign_poll_seconds
+    )
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         await database.create_schema()
         await repository.seed(settings.admin_username, hash_password(settings.admin_password))
         scheduler.start()
+        campaign_scheduler.start()
         if not waba.configured:
             LOGGER.warning("WABA is not fully configured; outbound messaging is disabled")
         try:
             yield
         finally:
+            await campaign_scheduler.stop()
             await scheduler.stop()
             await database.dispose()
 

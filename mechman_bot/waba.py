@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -79,8 +80,27 @@ class WABAClient:
         name: str,
         language: str,
         parameters: list[str] | None = None,
+        *,
+        header_type: str | None = None,
+        header_media_id: str | None = None,
+        header_filename: str | None = None,
     ) -> str:
         components: list[dict[str, Any]] = []
+        normalized_header = str(header_type or "").upper()
+        if normalized_header in {"IMAGE", "VIDEO", "DOCUMENT"}:
+            if not header_media_id:
+                raise WABAError(f"{normalized_header.title()} template requires uploaded media")
+            media_value: dict[str, str] = {"id": header_media_id}
+            if normalized_header == "DOCUMENT" and header_filename:
+                media_value["filename"] = header_filename
+            components.append(
+                {
+                    "type": "header",
+                    "parameters": [
+                        {"type": normalized_header.lower(), normalized_header.lower(): media_value}
+                    ],
+                }
+            )
         if parameters:
             components.append(
                 {
@@ -102,6 +122,26 @@ class WABAClient:
             },
         )
         return str(response.get("messages", [{}])[0].get("id", ""))
+
+    async def upload_media(self, path: Path, mime_type: str) -> str:
+        if not self.settings.meta_access_token:
+            raise WABAError("META_ACCESS_TOKEN is not configured")
+        if not path.is_file():
+            raise WABAError("Campaign media file is missing")
+        async with httpx.AsyncClient(timeout=90) as client:
+            with path.open("rb") as handle:
+                response = await client.post(
+                    f"{self.base_url}/{self.settings.meta_phone_number_id}/media",
+                    headers={"Authorization": f"Bearer {self.settings.meta_access_token}"},
+                    data={"messaging_product": "whatsapp", "type": mime_type},
+                    files={"file": (path.name, handle, mime_type)},
+                )
+        if response.is_error:
+            raise WABAError(f"Meta media upload {response.status_code}: {response.text}")
+        media_id = str(response.json().get("id", ""))
+        if not media_id:
+            raise WABAError("Meta media upload did not return an id")
+        return media_id
 
     async def submit_template(self, template: dict[str, Any]) -> dict[str, Any]:
         if not self.settings.meta_waba_id:

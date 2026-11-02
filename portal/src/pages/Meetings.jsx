@@ -1,6 +1,7 @@
 import { Filter, Search, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import api from '../api'
+import useDebouncedValue from '../hooks/useDebouncedValue'
 import { PageTitle, Status } from './Dashboard'
 
 const statuses = ['requested', 'confirmed', 'scheduled', 'completed', 'cancelled', 'no_show']
@@ -9,8 +10,9 @@ const when = (value) => value ? new Date(value).toLocaleString('en-IN', { dateSt
 
 export default function Meetings() {
   const [rows, setRows] = useState([]); const [q, setQ] = useState(''); const [status, setStatus] = useState(''); const [selected, setSelected] = useState(null)
-  function load() { api.get('/api/meetings', { params: { q, status } }).then(({ data }) => setRows(data)) }
-  useEffect(load, [q, status])
+  const debouncedQ = useDebouncedValue(q)
+  function load() { api.get('/api/meetings', { params: { q: debouncedQ, status } }).then(({ data }) => setRows(data)) }
+  useEffect(load, [debouncedQ, status])
   async function open(id) { const { data } = await api.get(`/api/meetings/${id}`); setSelected(data) }
   async function update(key, value) { const { data } = await api.patch(`/api/meetings/${selected.id}`, { [key]: value }); setSelected(data); load() }
   return <>

@@ -13,8 +13,8 @@ class FakeRepository:
         self.messages = []
         self.state = None
 
-    async def update_message_status(self, message_id, status):
-        self.messages.append(("status", message_id, status))
+    async def update_message_status(self, message_id, status, error=None):
+        self.messages.append(("status", message_id, status, error))
 
     async def upsert_conversation(self, phone, display_name):
         return {"id": 1, "phone": phone, "bot_state": {}, "is_taken_over": self.taken_over}
@@ -86,3 +86,38 @@ async def test_takeover_logs_inbound_without_bot_reply() -> None:
     await processor.process(payload())
     assert not waba.sent
     assert repository.state is None
+
+
+@pytest.mark.asyncio
+async def test_delivery_failure_preserves_meta_error_detail() -> None:
+    repository = FakeRepository()
+    processor = WebhookProcessor(FakeSettings(), repository, FakeWABA())
+    await processor.process(
+        {
+            "entry": [
+                {
+                    "changes": [
+                        {
+                            "value": {
+                                "statuses": [
+                                    {
+                                        "id": "wamid.failed",
+                                        "status": "failed",
+                                        "errors": [
+                                            {
+                                                "title": "Delivery failed",
+                                                "error_data": {"details": "Recipient is not valid"},
+                                            }
+                                        ],
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                }
+            ]
+        }
+    )
+    assert repository.messages == [
+        ("status", "wamid.failed", "failed", "Recipient is not valid")
+    ]

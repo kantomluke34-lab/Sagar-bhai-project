@@ -12,7 +12,7 @@ COPY pyproject.toml README.md ./
 COPY mechman_bot ./mechman_bot
 RUN pip install --no-cache-dir .
 
-RUN chown -R mechman:mechman /app
+RUN mkdir -p /app/media && chown -R mechman:mechman /app
 USER mechman
 
 EXPOSE 8000

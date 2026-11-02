@@ -66,3 +66,28 @@ async def test_template_submission_includes_variable_examples() -> None:
     payload = client._post.await_args.args[1]
     body = next(item for item in payload["components"] if item["type"] == "BODY")
     assert body["example"] == {"body_text": [["Kunj", "10:30 AM"]]}
+
+
+@pytest.mark.asyncio
+async def test_media_template_send_includes_header_and_body_parameters() -> None:
+    client = WABAClient(settings())
+    client._post = AsyncMock(return_value={"messages": [{"id": "wamid.123"}]})
+
+    message_id = await client.send_template(
+        "919876543210",
+        "product_brochure",
+        "en_US",
+        ["Asha", "PowerMill"],
+        header_type="DOCUMENT",
+        header_media_id="media-1",
+        header_filename="brochure.pdf",
+    )
+
+    payload = client._post.await_args.args[1]
+    components = payload["template"]["components"]
+    assert message_id == "wamid.123"
+    assert components[0]["parameters"][0]["document"] == {
+        "id": "media-1",
+        "filename": "brochure.pdf",
+    }
+    assert [item["text"] for item in components[1]["parameters"]] == ["Asha", "PowerMill"]
