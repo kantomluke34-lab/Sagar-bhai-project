@@ -1,6 +1,6 @@
 # Mechman Solutions website decode
 
-Scope: only pages on `mechmansolution.com` were used for company and offering facts.
+Scope: pages on `mechmansolution.com` were used for company and offering facts. The supplied CAM Assistant HTML defined the chatbot flow and visual direction. Production WhatsApp transport uses only Meta's official Cloud API.
 
 ## Positioning
 

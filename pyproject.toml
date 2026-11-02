@@ -3,21 +3,24 @@ requires = ["setuptools>=69"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "mechman-whatsapp-bot"
-version = "1.0.0"
-description = "Hard-coded WhatsApp enquiry and meeting-booking bot for Mechman Solutions"
-requires-python = ">=3.10"
+name = "mechman-sales-meeting-crm"
+version = "3.0.0"
+description = "Official WABA sales-meeting CRM for Mechman Solutions"
+requires-python = ">=3.11"
 dependencies = [
+  "asyncpg>=0.30.0",
   "bcrypt>=4.1.0",
   "fastapi>=0.115.0",
+  "httpx>=0.28.0",
   "PyJWT>=2.15.1",
   "python-multipart>=0.0.12",
+  "sqlalchemy[asyncio]>=2.0.36",
   "uvicorn[standard]>=0.32.0",
 ]
 
 [project.optional-dependencies]
 dev = [
-  "httpx>=0.28.0",
+  "pytest-asyncio>=0.25.0",
   "pytest>=8.0",
   "ruff>=0.11.0",
 ]
@@ -31,11 +34,12 @@ include = ["mechman_bot*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+asyncio_default_fixture_loop_scope = "function"
 
 [tool.ruff]
-target-version = "py310"
+target-version = "py311"
 line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]
-ignore = ["E501"]
+ignore = ["B008", "E501"]

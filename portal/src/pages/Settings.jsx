@@ -70,12 +70,14 @@ export default function Settings() {
           <label className="toggle-row"><span><strong>Enable reminders</strong><small>Pause without deleting your template.</small></span><input type="checkbox" checked={form.reminder_enabled} onChange={set('reminder_enabled')} /></label>
           <label>Minutes before the meeting<input type="number" min="15" max="1440" value={form.reminder_minutes_before} onChange={set('reminder_minutes_before')} required /></label>
           <label>Reminder message<textarea rows="7" value={form.reminder_template} onChange={set('reminder_template')} required /></label>
+          <label>Approved Meta template name<input value={form.reminder_meta_template || ''} onChange={set('reminder_meta_template')} placeholder="meeting_reminder" /><small>Required when the 24-hour service window is closed.</small></label>
         </section>
         <section className="panel settings-panel">
           <div className="settings-heading"><CheckCircle2 /><div><h2>Meeting follow-ups</h2><p>Send after confirmed, scheduled, or completed calls.</p></div></div>
           <label className="toggle-row"><span><strong>Enable follow-ups</strong><small>Each configured delay sends once.</small></span><input type="checkbox" checked={form.followup_enabled} onChange={set('followup_enabled')} /></label>
           <label>Days after meeting<input value={days} onChange={(event) => setDays(event.target.value)} placeholder="1, 3" required /><small>Comma-separated days, from 1 to 90.</small></label>
           <label>Follow-up message<textarea rows="7" value={form.followup_template} onChange={set('followup_template')} required /></label>
+          <label>Approved Meta template name<input value={form.followup_meta_template || ''} onChange={set('followup_meta_template')} placeholder="meeting_followup" /><small>The template must be approved in Message Templates.</small></label>
         </section>
         <div className="settings-actions span-2">
           <div>{error && <div className="alert error">{error}</div>}{notice && <div className="alert success">{notice}</div>}</div>

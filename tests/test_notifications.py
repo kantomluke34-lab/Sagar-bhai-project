@@ -1,73 +1,50 @@
-from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock
+
+import pytest
 
 from mechman_bot.notifications import NotificationScheduler
-from mechman_bot.storage import BotStore
 
 
-def create_scheduled_meeting(store: BotStore, starts: datetime) -> int:
-    meeting_id = store.create_meeting(
-        {
-            "name": "Raj Patel",
-            "phone": "919876543210",
-            "email": "raj@example.com",
-            "company": "",
-            "purpose": "Meeting requested through the booking form",
-            "meeting_mode": "WhatsApp or phone call",
-            "start_at": starts.isoformat(),
-            "end_at": (starts + timedelta(hours=1)).isoformat(),
-            "preferred_date": starts.date().isoformat(),
-            "preferred_time": starts.strftime("%H:%M"),
-            "source": "web_form",
-        }
-    )
-    store.update_meeting(meeting_id, {"status": "confirmed"}, "test")
-    return meeting_id
+def meeting() -> dict:
+    return {
+        "id": 7,
+        "conversation_id": 3,
+        "phone": "919999999999",
+        "name": "Kunj",
+    }
 
 
-def test_scheduler_sends_reminder_once_and_persists_delivery() -> None:
-    store = BotStore(":memory:")
-    now = datetime(2027, 1, 12, 8, 30, tzinfo=timezone.utc)
-    create_scheduled_meeting(store, now + timedelta(minutes=45))
-    sent: list[tuple[str, str]] = []
-    scheduler = NotificationScheduler(
-        store,
-        lambda phone, message: sent.append((phone, message)),
-    )
+@pytest.mark.asyncio
+async def test_free_text_is_blocked_outside_service_window() -> None:
+    repository = AsyncMock()
+    repository.delivery_exists.return_value = False
+    repository.within_service_window.return_value = False
+    waba = AsyncMock()
+    scheduler = NotificationScheduler(repository, waba)
 
-    assert scheduler.run_once(now) == 1
-    assert scheduler.run_once(now + timedelta(minutes=5)) == 0
-    assert sent[0][0] == "919876543210"
-    assert "quick reminder" in sent[0][1]
-    assert len(store.recent_notification_deliveries()) == 1
-    store.close()
+    with pytest.raises(RuntimeError, match="approved Meta template"):
+        await scheduler._send(meeting(), "reminder:60", "Your meeting starts soon")
+
+    waba.send_text.assert_not_awaited()
+    repository.add_delivery.assert_not_awaited()
 
 
-def test_followup_days_are_configurable() -> None:
-    store = BotStore(":memory:")
-    starts = datetime(2027, 1, 12, 8, 30, tzinfo=timezone.utc)
-    meeting_id = create_scheduled_meeting(store, starts)
-    store.update_meeting(meeting_id, {"status": "completed"}, "test")
-    current = store.get_notification_settings()
-    store.update_notification_settings({**current, "followup_days": [2, 4]})
+@pytest.mark.asyncio
+async def test_approved_template_can_send_outside_service_window() -> None:
+    repository = AsyncMock()
+    repository.delivery_exists.return_value = False
+    waba = AsyncMock()
+    waba.send_template.return_value = "wamid.1"
+    scheduler = NotificationScheduler(repository, waba)
 
-    jobs = store.due_notifications(starts + timedelta(days=2, minutes=1))
-
-    assert [job["notification_key"] for job in jobs] == ["followup_2d"]
-    assert "2 day(s)" in jobs[0]["message"]
-    store.close()
-
-
-def test_scheduler_waits_for_transport_availability() -> None:
-    store = BotStore(":memory:")
-    now = datetime(2027, 1, 12, 8, 30, tzinfo=timezone.utc)
-    create_scheduled_meeting(store, now + timedelta(minutes=30))
-    sent: list[tuple[str, str]] = []
-    scheduler = NotificationScheduler(
-        store,
-        lambda phone, message: sent.append((phone, message)),
-        is_available=lambda: False,
+    await scheduler._send(
+        meeting(),
+        "reminder:60",
+        "Your meeting starts soon",
+        "meeting_reminder",
     )
 
-    assert scheduler.run_once(now) == 0
-    assert sent == []
-    store.close()
+    waba.send_template.assert_awaited_once_with(
+        "919999999999", "meeting_reminder", "en_US", ["Kunj"]
+    )
+    repository.add_delivery.assert_awaited_once()

@@ -1,0 +1,158 @@
+name: CI/CD
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  backend:
+    name: Backend checks
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: mechman_test
+          POSTGRES_USER: mechman_test
+          POSTGRES_PASSWORD: test-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U mechman_test -d mechman_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgresql+asyncpg://mechman_test:test-password@127.0.0.1:5432/mechman_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install backend dependencies
+        run: python -m pip install -e '.[dev]'
+      - name: Lint backend
+        run: ruff check mechman_bot tests
+      - name: Test backend with PostgreSQL
+        run: pytest
+
+  frontend:
+    name: Frontend checks
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: portal
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: portal/package-lock.json
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Test frontend
+        run: npm test
+      - name: Build frontend
+        env:
+          VITE_API_URL: https://api.207-180-203-160.nip.io
+        run: npm run build
+
+  deploy-backend:
+    name: Deploy Contabo backend
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: [backend, frontend]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: production
+      url: https://api.207-180-203-160.nip.io/readyz
+    env:
+      SSH_HOST: ${{ vars.CONTABO_HOST }}
+      SSH_USER: ${{ vars.CONTABO_USER }}
+      SSH_PRIVATE_KEY: ${{ secrets.CONTABO_SSH_KEY }}
+      SSH_KNOWN_HOSTS: ${{ secrets.CONTABO_KNOWN_HOSTS }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Refuse an incompatible backend release
+        run: |
+          grep -F 'version = "3.0.0"' pyproject.toml
+          grep -F 'postgresql+asyncpg' pyproject.toml
+          grep -F '/api/waba/status' mechman_bot/api.py
+          test -f docker-compose.yml
+          test -f Caddyfile
+      - name: Configure deployment SSH key
+        run: |
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$HOME/.ssh/mechman_deploy"
+          chmod 600 "$HOME/.ssh/mechman_deploy"
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+      - name: Synchronize release source
+        run: |
+          rsync -az --delete \
+            --exclude '.env' \
+            --exclude '.git' \
+            --exclude '.venv' \
+            --exclude '.pytest_cache' \
+            --exclude '.ruff_cache' \
+            --exclude '__pycache__' \
+            --exclude 'data' \
+            --exclude 'portal/node_modules' \
+            --exclude 'portal/dist' \
+            -e "ssh -i $HOME/.ssh/mechman_deploy" \
+            ./ "$SSH_USER@$SSH_HOST:/opt/mechman-crm/"
+      - name: Back up, deploy, verify, and roll back on failure
+        run: |
+          ssh -i "$HOME/.ssh/mechman_deploy" "$SSH_USER@$SSH_HOST" \
+            "bash -s -- '$GITHUB_SHA'" <<'REMOTE'
+          set -Eeuo pipefail
+          cd /opt/mechman-crm
+
+          release_sha="$1"
+          new_image="mechman-crm-app:${release_sha}"
+          rollback_image="mechman-crm-app:rollback-${release_sha}"
+          current_container="$(docker compose ps -q app)"
+
+          if [ -z "$current_container" ]; then
+            echo "The production app container is not running." >&2
+            exit 1
+          fi
+
+          current_image_id="$(docker inspect --format '{{.Image}}' "$current_container")"
+          docker image tag "$current_image_id" "$rollback_image"
+
+          rollback() {
+            echo "Deployment failed; restoring the previous app image." >&2
+            APP_IMAGE="$rollback_image" docker compose up -d --no-build --wait app || true
+            docker compose logs --tail=100 app >&2 || true
+          }
+          trap rollback ERR
+
+          docker compose config -q
+          install -d -m 700 /var/backups/mechman
+          docker compose exec -T postgres sh -c \
+            'pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB"' \
+            | gzip > "/var/backups/mechman/predeploy-${release_sha}.sql.gz"
+
+          docker build --pull --tag "$new_image" .
+          APP_IMAGE="$new_image" docker compose up -d --no-build --wait app
+          curl --fail --silent --show-error \
+            --retry 10 --retry-delay 3 --retry-all-errors \
+            https://api.207-180-203-160.nip.io/readyz
+
+          docker image tag "$new_image" mechman-crm-app:latest
+          find /var/backups/mechman -type f -name 'predeploy-*.sql.gz' -mtime +14 -delete
+          trap - ERR
+          docker compose ps
+          REMOTE

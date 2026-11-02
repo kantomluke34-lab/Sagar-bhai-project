@@ -8,7 +8,7 @@ const when = (value) => value ? new Date(value).toLocaleString('en-IN', { dateSt
 const person = (row = {}) => first(row.contact_name, row.profile_name, row.name, row.phone, row.wa_id, 'Unknown contact')
 const phone = (row = {}) => first(row.phone, row.wa_id, row.contact_phone, '—')
 const preview = (row = {}) => first(row.last_message, row.last_message_text, row.preview, row.message, 'No messages yet')
-const isHuman = (row = {}) => Boolean(first(row.human_takeover, row.is_manual, row.mode === 'human', row.control_mode === 'human'))
+const isHuman = (row = {}) => Boolean(first(row.is_taken_over, row.human_takeover, row.is_manual, row.mode === 'human', row.control_mode === 'human'))
 const messageText = (message = {}) => first(message.text, message.body, message.content, message.message, '')
 const incoming = (message = {}) => first(message.direction, message.type) === 'inbound' || message.is_inbound === true || message.from_customer === true
 
@@ -95,7 +95,7 @@ export default function Conversations() {
             {messages.length ? messages.map((message, index) => (
               <article key={message.id || index} className={`message-bubble ${incoming(message) ? 'inbound' : 'outbound'}`}>
                 <p>{messageText(message)}</p>
-                <small>{when(first(message.sent_at, message.created_at, message.timestamp))}</small>
+                <small>{when(first(message.occurred_at, message.sent_at, message.created_at, message.timestamp))}</small>
               </article>
             )) : <div className="empty"><UserRound size={24} /> No messages in this conversation yet.</div>}
           </div>

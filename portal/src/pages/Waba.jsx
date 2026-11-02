@@ -26,12 +26,12 @@ export default function Waba() {
   useEffect(() => { load() }, [])
   async function copyWebhook() { await navigator.clipboard.writeText(webhookUrl); setCopied(true); setTimeout(() => setCopied(false), 1800) }
 
-  const connection = first(status?.status, status?.connection_status, status?.connected ? 'connected' : '', 'unknown')
-  const connected = yes(status?.connected) || yes(connection)
-  const phone = first(status?.display_phone_number, status?.phone_number, status?.verified_name, 'Not reported')
+  const connection = first(status?.status, status?.connection_status, status?.connected || status?.configured ? 'connected' : '', 'unknown')
+  const connected = yes(status?.configured) || yes(status?.connected) || yes(connection)
+  const phone = first(status?.display_phone_number, status?.phone_number, status?.phone_number_id, status?.verified_name, 'Not reported')
   const quality = first(status?.quality_rating, status?.quality, 'Not reported')
-  const appConfigured = first(status?.app_secret_configured, status?.webhook_signature_configured, status?.signature_verification, false)
-  const verifyConfigured = first(status?.verify_token_configured, status?.webhook_verify_token_configured, false)
+  const appConfigured = first(status?.signature_validation_configured, status?.app_secret_configured, status?.webhook_signature_configured, status?.signature_verification, false)
+  const verifyConfigured = first(status?.webhook_verification_configured, status?.verify_token_configured, status?.webhook_verify_token_configured, false)
   return <>
     <PageTitle kicker="META WHATSAPP CLOUD API" title="WABA status" subtitle="Connection health, sender identity, webhook readiness, and production configuration." action={<button className="secondary-button" onClick={load}><RefreshCw size={16} />Refresh</button>} />
     {error && <div className="alert error">{error}</div>}

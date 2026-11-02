@@ -1,6 +1,5 @@
-"""Mechman Solutions WhatsApp bot."""
+"""Mechman Solutions sales-meeting CRM and official WABA assistant."""
 
-from .flow import ConversationEngine, FlowResult
-from .storage import BotStore
+from .web import create_app
 
-__all__ = ["BotStore", "ConversationEngine", "FlowResult"]
+__all__ = ["create_app"]

@@ -9,7 +9,7 @@ coupling those handlers to a database implementation.
 from __future__ import annotations
 
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, RootModel, model_validator
@@ -21,12 +21,12 @@ class ApiModel(BaseModel):
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
 
-class ConversationMode(str, Enum):
+class ConversationMode(StrEnum):
     BOT = "bot"
     HUMAN = "human"
 
 
-class MessageDirection(str, Enum):
+class MessageDirection(StrEnum):
     INBOUND = "inbound"
     OUTBOUND = "outbound"
 
@@ -98,7 +98,7 @@ class WabaStatus(ApiModel):
     error: str | None = None
 
 
-class TemplateCategory(str, Enum):
+class TemplateCategory(StrEnum):
     UTILITY = "UTILITY"
     MARKETING = "MARKETING"
     AUTHENTICATION = "AUTHENTICATION"

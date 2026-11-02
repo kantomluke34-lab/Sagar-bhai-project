@@ -1,70 +1,136 @@
-"""Transport-neutral reminder and follow-up scheduler."""
+"""Async meeting reminder and follow-up scheduler."""
 
 from __future__ import annotations
 
+import asyncio
 import logging
-import threading
-from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timedelta
 
-from .storage import BotStore
+from .repository import CRMRepository
+from .waba import WABAClient
 
 LOGGER = logging.getLogger(__name__)
 
 
 class NotificationScheduler:
-    """Poll due notifications and record successful deliveries exactly once."""
-
     def __init__(
-        self,
-        store: BotStore,
-        sender: Callable[[str, str], None],
-        is_available: Callable[[], bool] | None = None,
-        interval_seconds: int = 30,
+        self, repository: CRMRepository, waba: WABAClient, interval_seconds: int = 30
     ) -> None:
-        self.store = store
-        self.sender = sender
-        self.is_available = is_available or (lambda: True)
+        self.repository = repository
+        self.waba = waba
         self.interval_seconds = interval_seconds
-        self._stop = threading.Event()
-        self._thread: threading.Thread | None = None
+        self._task: asyncio.Task | None = None
 
     def start(self) -> None:
-        if self._thread and self._thread.is_alive():
-            return
-        self._thread = threading.Thread(
-            target=self._run,
-            name="meeting-notifications",
-            daemon=True,
-        )
-        self._thread.start()
+        if not self._task or self._task.done():
+            self._task = asyncio.create_task(self._run(), name="meeting-notifications")
 
-    def stop(self) -> None:
-        self._stop.set()
-        if self._thread:
-            self._thread.join(timeout=5)
-
-    def run_once(self, now: datetime | None = None) -> int:
-        if not self.is_available():
-            return 0
-        sent = 0
-        for job in self.store.due_notifications(now or datetime.now(timezone.utc)):
+    async def stop(self) -> None:
+        if self._task:
+            self._task.cancel()
             try:
-                self.sender(str(job["phone"]), str(job["message"]))
-                self.store.mark_notification_sent(job)
-                sent += 1
-            except Exception:
-                LOGGER.exception(
-                    "Failed to send %s for meeting %s",
-                    job["notification_key"],
-                    job["meeting_id"],
+                await self._task
+            except asyncio.CancelledError:
+                pass
+
+    async def _send(self, meeting: dict, key: str, body: str, template_name: str = "") -> None:
+        if await self.repository.delivery_exists(meeting["id"], key):
+            return
+        if template_name:
+            wa_id = await self.waba.send_template(
+                meeting["phone"], template_name, "en_US", [meeting["name"]]
+            )
+        else:
+            conversation_id = meeting.get("conversation_id")
+            if not conversation_id or not await self.repository.within_service_window(
+                int(conversation_id)
+            ):
+                raise RuntimeError(
+                    "An approved Meta template is required outside the 24-hour service window"
                 )
+            wa_id = await self.waba.send_text(meeting["phone"], body)
+        await self.repository.add_delivery(
+            meeting_id=meeting["id"],
+            notification_key=key,
+            recipient=meeting["phone"],
+            message=body,
+            status="accepted",
+            wa_message_id=wa_id,
+        )
+        if meeting.get("conversation_id"):
+            await self.repository.add_message(
+                meeting["conversation_id"],
+                direction="outbound",
+                body=body,
+                sender="scheduler",
+                wa_message_id=wa_id,
+                message_type="template" if template_name else "text",
+                status="accepted",
+            )
+
+    async def run_once(self, now: datetime | None = None) -> int:
+        if not self.waba.configured:
+            return 0
+        now = now or datetime.now(UTC)
+        settings = await self.repository.notification_settings()
+        sent = 0
+        if settings.get("reminder_enabled"):
+            minutes = int(settings.get("reminder_minutes_before", 60))
+            target = now + timedelta(minutes=minutes)
+            candidates = await self.repository.notification_candidates(
+                target - timedelta(seconds=self.interval_seconds),
+                target + timedelta(seconds=self.interval_seconds),
+            )
+            for meeting in candidates:
+                if meeting["status"] not in {"confirmed", "scheduled"}:
+                    continue
+                body = str(settings.get("reminder_template", "")).format(
+                    name=meeting["name"],
+                    date=meeting["start_at"].strftime("%d %B %Y"),
+                    time=meeting["start_at"].strftime("%I:%M %p"),
+                    minutes=minutes,
+                )
+                try:
+                    await self._send(
+                        meeting,
+                        f"reminder:{minutes}",
+                        body,
+                        str(settings.get("reminder_meta_template", "")),
+                    )
+                    sent += 1
+                except Exception:
+                    LOGGER.exception("Failed to send meeting reminder for %s", meeting["id"])
+        if settings.get("followup_enabled"):
+            for days in settings.get("followup_days", [1, 3]):
+                target = now - timedelta(days=int(days))
+                candidates = await self.repository.notification_candidates(
+                    target - timedelta(seconds=self.interval_seconds),
+                    target + timedelta(seconds=self.interval_seconds),
+                )
+                for meeting in candidates:
+                    if meeting["status"] not in {"confirmed", "scheduled", "completed"}:
+                        continue
+                    body = str(settings.get("followup_template", "")).format(
+                        name=meeting["name"],
+                        date=meeting["start_at"].strftime("%d %B %Y"),
+                        days=days,
+                    )
+                    try:
+                        await self._send(
+                            meeting,
+                            f"followup:{days}",
+                            body,
+                            str(settings.get("followup_meta_template", "")),
+                        )
+                        sent += 1
+                    except Exception:
+                        LOGGER.exception("Failed to send meeting follow-up for %s", meeting["id"])
         return sent
 
-    def _run(self) -> None:
-        while not self._stop.is_set():
+    async def _run(self) -> None:
+        while True:
             try:
-                self.run_once()
+                await self.run_once()
             except Exception:
                 LOGGER.exception("Notification scheduler cycle failed")
-            self._stop.wait(self.interval_seconds)
+            await asyncio.sleep(self.interval_seconds)

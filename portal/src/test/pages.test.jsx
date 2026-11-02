@@ -1,5 +1,6 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { addDays, format } from 'date-fns'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 
@@ -78,7 +79,8 @@ describe('dashboard controls', () => {
     renderRoute(<BookingForm />, '/book?name=Asha&phone=9876543210')
 
     await user.type(screen.getByLabelText('Email address *'), 'asha@example.com')
-    fireEvent.change(screen.getByLabelText('Meeting date *'), { target: { value: '2026-11-02' } })
+    const bookingDate = format(addDays(new Date(), 2), 'yyyy-MM-dd')
+    fireEvent.change(screen.getByLabelText('Meeting date *'), { target: { value: bookingDate } })
     await user.click(await screen.findByRole('button', { name: /9:00 AM/i }))
     await user.click(screen.getByRole('button', { name: 'Book meeting' }))
 

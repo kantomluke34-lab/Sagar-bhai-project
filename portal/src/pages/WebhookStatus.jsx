@@ -19,8 +19,8 @@ export default function WebhookStatus() {
   useEffect(() => { load() }, [])
   async function copy() { await navigator.clipboard.writeText(callbackUrl); setCopied(true); setTimeout(() => setCopied(false), 1800) }
 
-  const tokenReady = yes(status?.verify_token_configured) || yes(status?.webhook_verify_token_configured)
-  const signatureReady = yes(status?.app_secret_configured) || yes(status?.webhook_signature_configured)
+  const tokenReady = yes(status?.webhook_verification_configured) || yes(status?.verify_token_configured) || yes(status?.webhook_verify_token_configured)
+  const signatureReady = yes(status?.signature_validation_configured) || yes(status?.app_secret_configured) || yes(status?.webhook_signature_configured)
   return <>
     <PageTitle kicker="META EVENT DELIVERY" title="Webhook" subtitle="The production callback that verifies Meta and processes inbound WhatsApp events." action={<button className="secondary-button" onClick={load}><RefreshCw size={16} />Refresh</button>} />
     {error && <div className="alert error">{error}</div>}
