@@ -8,6 +8,13 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
+    // The booking page is intentionally public. Do not make an authenticated
+    // session request from it: a 401 from that request used to redirect a
+    // visitor to /login before they could book a meeting.
+    if (window.location.pathname === '/book') {
+      setLoading(false)
+      return
+    }
     api.get('/api/auth/me').then(({ data }) => setUser(data)).catch(() => clearToken()).finally(() => setLoading(false))
   }, [])
 
