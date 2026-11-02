@@ -34,8 +34,8 @@ jobs:
     env:
       TEST_DATABASE_URL: postgresql+asyncpg://mechman_test:test-password@127.0.0.1:5432/mechman_test
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
@@ -53,8 +53,8 @@ jobs:
       run:
         working-directory: portal
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 20
           cache: npm
@@ -83,11 +83,12 @@ jobs:
       SSH_PRIVATE_KEY: ${{ secrets.CONTABO_SSH_KEY }}
       SSH_KNOWN_HOSTS: ${{ secrets.CONTABO_KNOWN_HOSTS }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Refuse an incompatible backend release
         run: |
           grep -F 'version = "3.0.0"' pyproject.toml
-          grep -F 'postgresql+asyncpg' pyproject.toml
+          grep -F 'asyncpg' pyproject.toml
+          test -f mechman_bot/database.py
           grep -F '/api/waba/status' mechman_bot/api.py
           test -f docker-compose.yml
           test -f Caddyfile
