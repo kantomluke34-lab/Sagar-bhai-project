@@ -16,7 +16,7 @@ export default function SelectField({ value, onChange, options, placeholder = 'S
             const item = typeof option === 'string' ? { value: option, label: option } : option
             return <Select.Item className="custom-select-item" key={item.value} value={item.value === '' ? EMPTY : String(item.value)}>
               <Select.ItemText>{item.label}</Select.ItemText>
-              <Select.ItemIndicator><Check size={15} aria-hidden="true" /></Select.ItemIndicator>
+              <Select.ItemIndicator className="custom-select-indicator"><Check size={15} aria-hidden="true" /></Select.ItemIndicator>
             </Select.Item>
           })}
         </Select.Viewport>

@@ -8,6 +8,7 @@ import Hint from '../components/Hint'
 const blank = { name: '', language: 'en_US', category: 'UTILITY', header: '', body: '', footer: '', variables: '', buttons: [] }
 const normalize = (item = {}) => ({ ...blank, ...item, variables: Array.isArray(item.variables) ? item.variables.join(', ') : item.variables || '', buttons: item.buttons || [] })
 const state = (item = {}) => String(item.status || item.meta_status || item.approval_status || 'draft').toLowerCase()
+const rejectionReason = (item) => state(item) === 'rejected' && !['', 'none', 'null'].includes(String(item.rejection_reason || '').trim().toLowerCase()) ? item.rejection_reason : ''
 
 export default function Templates() {
   const [rows, setRows] = useState([])
@@ -56,13 +57,13 @@ export default function Templates() {
 
   return <>
     <PageTitle kicker="META MESSAGE TEMPLATES" title="Templates" subtitle="Create and manage approved WhatsApp messages." action={<div className="page-actions"><Hint label="Refresh approval status from Meta"><button className="secondary-button" disabled={busy} onClick={sync}><RefreshCw size={16} />Sync with Meta</button></Hint><button className="primary-button" onClick={() => setDraft({ ...blank })}><Plus size={16} />New template</button></div>} />
-    <div className="template-guide"><div><strong>Using templates</strong><span>Draft → Submit for approval → Send once approved</span></div><details><summary>Variables and approval</summary><p>Meta reviews each template. Sync to refresh its status. Add an example for each {'{{1}}'} variable in the same order it appears in your message.</p></details></div>
+    <div className="template-guide"><div><strong>Using templates</strong><span>Draft → Submit for approval → Send once approved</span></div><details><summary>About approval and variables</summary><p>Meta reviews submitted templates. Use Sync with Meta to refresh approval. For each variable such as {'{{1}}'}, add an example in the order it appears.</p></details></div>
     {error && <div className="alert error">{typeof error === 'string' ? error : 'Template request failed.'}</div>}
     {notice && <div className="alert success">{notice}</div>}
     {loading ? <div className="panel empty"><Loader2 className="spin" /> Loading templates…</div> : rows.length ? <div className="template-grid">{rows.map((item) => <article className="template-card" key={item.id || item.name}>
       <header><div className="template-icon"><FileText /></div><div><h2>{item.name}</h2><span>{item.language || 'en_US'} · {item.category || 'UTILITY'}</span></div><Status value={state(item)} /></header>
       {item.header && <strong className="template-header">{item.header}</strong>}<p>{item.body || 'No template body.'}</p>{item.footer && <small>{item.footer}</small>}
-      {item.rejection_reason && <p className="alert error">Meta's reason: {item.rejection_reason}</p>}
+      {rejectionReason(item) && <p className="alert error">Meta's reason: {rejectionReason(item)}</p>}
       <footer>{['approved', 'pending'].includes(state(item)) ? <Hint label="Use this template as a starting point"><button className="secondary-button compact" onClick={() => setDraft({ ...normalize(item), id: undefined, name: `${item.name}_copy` })}><Edit3 size={15} />Duplicate</button></Hint> : <button className="secondary-button compact" onClick={() => setDraft(normalize(item))}><Edit3 size={15} />Edit</button>}{!['approved', 'pending'].includes(state(item)) && <Hint label="Submit this draft to Meta for review"><button className="primary-button compact" disabled={busy} onClick={() => submit(item)}><Send size={15} />Submit for review</button></Hint>}</footer>
     </article>)}</div> : <section className="panel empty"><FileText size={30} /><h2>No templates yet</h2><p>Create a draft or sync approved templates from Meta.</p></section>}
     {draft && <div className="drawer-backdrop" onClick={() => setDraft(null)}><aside className="drawer" onClick={(event) => event.stopPropagation()}><button className="drawer-close" aria-label="Close template editor" onClick={() => setDraft(null)}><X /></button><span className="eyebrow">{draft.id ? `TEMPLATE #${draft.id}` : 'NEW TEMPLATE'}</span><h2>{draft.id ? 'Edit message template' : 'Create message template'}</h2><p>Choose Utility for an existing customer transaction or Marketing for promotional messages. Meta reviews the category and message.</p>{error && <div className="alert error" role="alert">{typeof error === 'string' ? error : 'Check the template fields and try again.'}</div>}<form className="template-form" onSubmit={save}>

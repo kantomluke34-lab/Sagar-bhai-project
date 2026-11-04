@@ -239,6 +239,18 @@ describe('dashboard controls', () => {
     expect(screen.getByText('Create message template')).toBeVisible()
   })
 
+  test('template cards show a reason only for a rejected template', async () => {
+    api.get.mockResolvedValue({ data: [
+      { id: 1, name: 'approved_welcome', body: 'Welcome', status: 'APPROVED', rejection_reason: 'NONE' },
+      { id: 2, name: 'rejected_promo', body: 'Offer', status: 'REJECTED', rejection_reason: 'Incorrect category' },
+    ] })
+    renderRoute(<Templates />)
+
+    expect(await screen.findByText('approved_welcome')).toBeVisible()
+    expect(screen.queryByText("Meta's reason: NONE")).not.toBeInTheDocument()
+    expect(screen.getByText("Meta's reason: Incorrect category")).toBeVisible()
+  })
+
   test('analytics renders all summary cards and recent meetings', async () => {
     api.get.mockResolvedValue({ data: {
       total_contacts: 5, total_meetings: 5, upcoming_meetings: 4, today_meetings: 1,

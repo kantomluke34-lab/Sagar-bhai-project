@@ -141,8 +141,8 @@ export default function Settings() {
           <div className="password-actions"><div>{passwordError && <div className="alert error">{passwordError}</div>}{passwordNotice && <div className="alert success">{passwordNotice}</div>}</div><button className="primary-button" disabled={passwordBusy}><KeyRound size={17} />{passwordBusy ? 'Changing…' : 'Change password'}</button></div>
         </form>
       </section>
-      <div className="notice"><strong>Available placeholders</strong><p>{'{name}, {date}, {time}, {minutes}, {days}'}</p></div>
-      <details className="panel"><summary>Advanced WhatsApp connection and webhook settings</summary><p>These details are normally maintained by your administrator.</p><Waba embedded /><WebhookStatus embedded /></details>
+      <div className="settings-reference"><strong>Available placeholders</strong><span>{'{name}, {date}, {time}, {minutes}, {days}'}</span></div>
+      <details className="settings-advanced panel"><summary>Advanced WhatsApp settings</summary><p>Connection and webhook details for your administrator.</p><Waba embedded /><WebhookStatus embedded /></details>
     </>
   )
 }
