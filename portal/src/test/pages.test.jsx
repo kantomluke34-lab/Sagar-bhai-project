@@ -121,6 +121,22 @@ describe('dashboard controls', () => {
     expect(screen.queryByText('REQUEST #1')).not.toBeInTheDocument()
   })
 
+  test('meetings expose a direct complete action in the list', async () => {
+    const user = userEvent.setup()
+    const meeting = { id: 3, name: 'Ravi Patel', phone: '919876543211', company: 'Mechworks', interest: 'CAM', purpose: 'Product demo', start_at: '2027-01-05T09:00:00+05:30', end_at: '2027-01-05T10:00:00+05:30', meeting_mode: 'Phone call', lead_stage: 'new', status: 'scheduled' }
+    api.get.mockResolvedValue({ data: [meeting] })
+    api.patch.mockResolvedValue({ data: { ...meeting, status: 'completed' } })
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    renderRoute(<Meetings />)
+
+    await user.click(await screen.findByRole('button', { name: 'Complete' }))
+
+    expect(confirm).toHaveBeenCalledWith("Mark Ravi Patel's meeting as complete?")
+    expect(api.patch).toHaveBeenCalledWith('/api/meetings/3', { status: 'completed' })
+    expect(await screen.findByText('Meeting marked complete.')).toBeVisible()
+    confirm.mockRestore()
+  })
+
   test('CRM search opens and closes a contact drawer', async () => {
     const user = userEvent.setup()
     const row = { id: 2, name: 'Dev Mehta', phone: '919999999999', email: 'dev@example.com', company: 'Delta', lead_stage: 'qualified', meeting_count: 1 }

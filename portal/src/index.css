@@ -66,7 +66,9 @@ p { text-wrap: pretty; }
 .chart-grid { display: grid; grid-template-columns: minmax(0, .8fr) minmax(0, 1.2fr); gap: 16px; margin-bottom: 16px; }
 .panel { padding: 18px; margin-bottom: 16px; }
 .panel.no-pad { padding: 0; overflow: hidden; }
-.panel-title h2 { margin-bottom: 16px; font-size: 17px; }
+.panel-title h2 { margin-bottom: 4px; font-size: 17px; }
+.panel-title p { margin: 0 0 14px; color: var(--muted); font-size: 12px; }
+.chart-empty { min-height: 260px; display: grid; place-items: center; padding: 24px; color: var(--muted); font-size: 13px; text-align: center; }
 .legend { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px 16px; color: var(--muted); font-size: 12px; }
 .legend span { display: flex; align-items: center; gap: 6px; }
 .legend i { width: 8px; height: 8px; border-radius: 50%; }
@@ -266,6 +268,10 @@ textarea { resize: vertical; }
 .template-guide details { color: var(--muted); }
 .template-guide summary { width: fit-content; cursor: pointer; color: #4d596b; font-size: 11px; font-weight: 600; }
 .template-guide p { max-width: 640px; margin: 4px 0 0; font-size: 11px; line-height: 1.45; }
+.template-guide-copy { display: grid; gap: 3px; margin-top: 4px; }
+.template-guide-copy p { margin: 0; }
+.template-guide code { width: fit-content; padding: 4px 6px; border-radius: 5px; color: #4d596b; background: #f4f6f9; font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.template-guide small { color: var(--muted); font-size: 11px; }
 .template-card { min-width: 0; display: grid; align-content: start; padding: 16px; border: 1px solid var(--line); border-radius: 12px; background: #fff; box-shadow: 0 3px 12px rgba(22,32,51,.035); }
 .template-card header { min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px; align-items: center; margin-bottom: 12px; }
 .template-card h2 { margin: 0 0 3px; overflow: hidden; text-overflow: ellipsis; font-size: 16px; white-space: nowrap; }
@@ -297,6 +303,15 @@ textarea { resize: vertical; }
 .campaign-form label { display: grid; gap: 7px; }
 .campaign-form fieldset { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding: 16px; border: 1px solid var(--line); border-radius: 12px; }
 .campaign-form legend { padding: 0 7px; font-size: 12px; font-weight: 800; }
+.fieldset-help { grid-column: 1 / -1; margin: -2px 0 1px; color: var(--muted); font-size: 11px; line-height: 1.45; }
+.workflow-guide { display: grid; gap: 5px; padding: 11px 14px; margin: 0 0 16px; border: 1px solid var(--line); border-radius: 10px; background: #fff; color: #4d596b; font-size: 12px; }
+.workflow-guide > div { display: flex; flex-wrap: wrap; align-items: baseline; gap: 5px 12px; }
+.workflow-guide strong { color: var(--ink); font-size: 12px; }
+.workflow-guide details { color: var(--muted); }
+.workflow-guide summary { width: fit-content; cursor: pointer; color: #4d596b; font-size: 11px; font-weight: 600; }
+.guide-copy { display: grid; gap: 4px; max-width: 760px; margin-top: 4px; }
+.guide-copy p { margin: 0; font-size: 11px; line-height: 1.45; }
+.source-help, .form-helper { margin: -7px 0 0; color: var(--muted); font-size: 12px; line-height: 1.45; }
 .template-preview { padding: 15px; border: 1px solid #e4d7ad; border-radius: 11px; background: #fffbef; }
 .template-preview p { margin: 7px 0; white-space: pre-wrap; }
 .template-preview small { color: var(--muted); }
@@ -359,6 +374,8 @@ textarea { resize: vertical; }
 .audience-list article { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 13px; border: 1px solid var(--line); border-radius: 10px; }
 .audience-list article > div { min-width: 0; display: grid; gap: 3px; }
 .audience-list small { color: var(--muted); }
+.table-action { min-height: 31px !important; padding: 0 9px !important; font-size: 12px !important; }
+.table-action svg { flex: 0 0 auto; }
 
 @media (max-width: 1000px) {
   .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
