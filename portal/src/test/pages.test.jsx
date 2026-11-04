@@ -106,11 +106,13 @@ describe('dashboard controls', () => {
 
     expect(await screen.findByText('Asha Shah')).toBeVisible()
     await user.type(screen.getByPlaceholderText(/Search name/), 'Asha')
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Filter by status' }), 'requested')
+    await user.click(screen.getByRole('combobox', { name: 'Filter by status' }))
+    await user.click(screen.getByRole('option', { name: 'requested' }))
     await user.click(screen.getByText('Asha Shah'))
     expect(await screen.findByText('REQUEST #1')).toBeVisible()
 
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Status' }), 'confirmed')
+    await user.click(screen.getByRole('combobox', { name: 'Meeting status' }))
+    await user.click(screen.getByRole('option', { name: 'confirmed' }))
     const assigned = screen.getByLabelText('Assigned to')
     await user.type(assigned, 'Kiran')
     await user.click(screen.getByRole('button', { name: 'Save changes' }))
@@ -229,7 +231,7 @@ describe('dashboard controls', () => {
     renderRoute(<Templates />)
 
     expect(await screen.findByText('meeting_confirmed')).toBeVisible()
-    await user.click(screen.getByRole('button', { name: /Sync Meta/i }))
+    await user.click(screen.getByRole('button', { name: /Sync with Meta/i }))
     expect(api.post).toHaveBeenCalledWith('/api/templates/sync')
     await user.click(screen.getByRole('button', { name: /Submit/i }))
     expect(api.post).toHaveBeenCalledWith('/api/templates/4/submit')

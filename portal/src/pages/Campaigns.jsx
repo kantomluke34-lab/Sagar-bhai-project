@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from 'react'
 import api from '../api'
 import useDebouncedValue from '../hooks/useDebouncedValue'
 import { PageTitle, Status } from './Dashboard'
+import Hint from '../components/Hint'
 
 const nowLocal = () => {
   const value = new Date(Date.now() + 15 * 60 * 1000)
@@ -173,7 +174,7 @@ export default function Campaigns() {
   }
 
   return <>
-    <PageTitle kicker="WHATSAPP MESSAGING" title="Campaigns" subtitle="An audience is a reusable group of contacts. A campaign sends an approved message to recipients you choose." action={<div className="page-actions"><button className="secondary-button" onClick={() => { setContactSearch(''); setContactPage(1); setAudienceDraft({ ...blankAudience, filters: { ...blankAudience.filters }, member_ids: [] }) }}><ListFilter size={16} />New audience</button><button className="primary-button" onClick={startDraft}><Plus size={16} />New campaign</button></div>} />
+    <PageTitle kicker="WHATSAPP MESSAGING" title="Campaigns" subtitle="An audience groups contacts. A campaign sends an approved message to that group." action={<div className="page-actions"><Hint label="Save a reusable group of contacts"><button className="secondary-button" onClick={() => { setContactSearch(''); setContactPage(1); setAudienceDraft({ ...blankAudience, filters: { ...blankAudience.filters }, member_ids: [] }) }}><ListFilter size={16} />New audience</button></Hint><Hint label="Choose a template, recipients, and send time"><button className="primary-button" onClick={startDraft}><Plus size={16} />New campaign</button></Hint></div>} />
     {error && <div className="alert error">{typeof error === 'string' ? error : 'Request failed.'}</div>}
     {notice && <div className="alert success">{notice}</div>}
     <div className="campaign-stats"><article><Send /><span><strong>{campaigns.length}</strong>Total campaigns</span></article><article><CalendarClock /><span><strong>{campaigns.filter((item) => ['scheduled', 'running', 'paused'].includes(item.status)).length}</strong>Active schedules</span></article><article><ListFilter /><span><strong>{audiences.length}</strong>CRM audiences</span></article><article><FileSpreadsheet /><span><strong>{campaigns.reduce((sum, item) => sum + (item.delivered_count || 0), 0)}</strong>Delivered</span></article></div>

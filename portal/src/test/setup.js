@@ -7,5 +7,9 @@ class ResizeObserverMock {
 }
 
 globalThis.ResizeObserver = ResizeObserverMock
+HTMLElement.prototype.hasPointerCapture ||= () => false
+HTMLElement.prototype.setPointerCapture ||= () => {}
+HTMLElement.prototype.releasePointerCapture ||= () => {}
+HTMLElement.prototype.scrollIntoView ||= () => {}
 globalThis.URL.createObjectURL = () => 'blob:mock-qr'
 globalThis.URL.revokeObjectURL = () => {}

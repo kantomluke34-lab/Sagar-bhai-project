@@ -3,6 +3,8 @@ import { useEffect, useState } from 'react'
 import api from '../api'
 import useDebouncedValue from '../hooks/useDebouncedValue'
 import { PageTitle } from './Dashboard'
+import SelectField from '../components/SelectField'
+import Hint from '../components/Hint'
 
 const first = (...values) => values.find((value) => value !== undefined && value !== null && value !== '')
 const when = (value) => value ? new Date(value).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Kolkata' }) : 'No activity yet'
@@ -128,8 +130,8 @@ export default function Conversations() {
             <div className="conversation-actions">
               <span className="control-label">{isHuman(selected) ? <><Headphones size={15} />Human control</> : <><Bot size={15} />Bot control</>}</span>
               {isHuman(selected)
-                ? <button disabled={busy} className="secondary-button compact" onClick={() => changeControl('return-to-bot')}>Return to bot</button>
-                : <button disabled={busy} className="primary-button compact" onClick={() => changeControl('take-over')}>Take over</button>}
+                ? <Hint label="Let the bot handle future replies"><button disabled={busy} className="secondary-button compact" onClick={() => changeControl('return-to-bot')}>Return to bot</button></Hint>
+                : <Hint label="Pause the bot and reply manually"><button disabled={busy} className="primary-button compact" onClick={() => changeControl('take-over')}>Take over</button></Hint>}
               <button className="icon-button mobile-detail-close" aria-label="Close conversation" onClick={() => setSelected(null)}><X /></button>
             </div>
           </header>
@@ -143,7 +145,7 @@ export default function Conversations() {
             )) : <div className="empty"><UserRound size={24} /> No messages in this conversation yet.</div>}
           </div>
           <form className="message-composer" onSubmit={send}>
-            <div className="reply-fields"><p className="muted">{selected.service_window_open === false ? 'The 24-hour reply window is closed. Choose an approved template.' : 'Take over to reply. Approved templates can be used when the reply window is closed.'}</p><label>Message type<select aria-label="Message type" value={templateId} onChange={(event) => { const id = event.target.value; const template = templates.find((item) => String(item.id) === id); const count = Math.max(0, ...[...(template?.body?.matchAll(/\{\{(\d+)\}\}/g) || [])].map((item) => Number(item[1]))); setTemplateId(id); setParameters(Array(count).fill('')) }}><option value="">Free text</option>{templates.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}</select></label>
+            <div className="reply-fields"><p className="muted composer-help">{selected.service_window_open === false ? 'Reply window closed. Choose an approved template.' : 'Take over to reply. Templates work outside the reply window.'}</p><label>Message type<SelectField aria-label="Message type" value={templateId} onChange={(id) => { const template = templates.find((item) => String(item.id) === id); const count = Math.max(0, ...[...(template?.body?.matchAll(/\{\{(\d+)\}\}/g) || [])].map((item) => Number(item[1]))); setTemplateId(id); setParameters(Array(count).fill('')) }} options={[{ value: '', label: 'Free text' }, ...templates.map((template) => ({ value: String(template.id), label: template.name }))]} /></label>
             {templateId ? <><p>{templates.find((item) => String(item.id) === templateId)?.body}</p>{parameters.map((value, index) => <label key={index}>Value for {`{{${index + 1}}}`}<input required value={value} onChange={(event) => setParameters((current) => current.map((item, position) => position === index ? event.target.value : item))} /></label>)}</> : <textarea aria-label="Reply message" rows="2" value={reply} onChange={(event) => setReply(event.target.value)} placeholder={isHuman(selected) ? 'Type a WhatsApp reply…' : 'Take over to send a manual reply…'} disabled={!isHuman(selected) || busy || selected.service_window_open === false} />}</div>
             <button className="primary-button" disabled={!isHuman(selected) || busy || (!templateId && (!reply.trim() || selected.service_window_open === false)) || (templateId && parameters.some((value) => !value.trim()))}><Send size={16} />Send</button>
           </form>
