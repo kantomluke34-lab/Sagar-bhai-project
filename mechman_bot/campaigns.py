@@ -24,6 +24,8 @@ MAX_IMPORT_ROWS = 10_000
 
 def normalize_phone(value: Any) -> str:
     digits = "".join(character for character in str(value or "") if character.isdigit())
+    if len(digits) == 10 and digits[0] in "6789":
+        digits = "91" + digits
     return digits if 7 <= len(digits) <= 15 else ""
 
 
@@ -152,15 +154,27 @@ class CampaignScheduler:
 
     async def _run(self) -> None:
         while not self._stopping.is_set():
+            claimed = None
             try:
+                await self.repository.recover_stalled_campaigns()
                 claimed = await self.repository.claim_due_campaign()
                 if claimed:
                     await self._deliver(claimed)
                     continue
             except asyncio.CancelledError:
+                if claimed:
+                    await asyncio.shield(self.repository.fail_campaign_run(
+                        claimed["campaign"]["id"], claimed["run"]["id"],
+                        "Campaign interrupted. Check delivery results before retrying.",
+                    ))
                 raise
             except Exception:
                 LOGGER.exception("campaign_worker_failed", extra={"event": "campaign_worker_failed"})
+                if claimed:
+                    await self.repository.fail_campaign_run(
+                        claimed["campaign"]["id"], claimed["run"]["id"],
+                        "Campaign interrupted. Check delivery results before retrying.",
+                    )
             try:
                 await asyncio.wait_for(self._stopping.wait(), timeout=self.poll_seconds)
             except TimeoutError:
@@ -190,6 +204,11 @@ class CampaignScheduler:
                 await self.repository.interrupt_campaign_run(campaign["id"], run["id"], state)
                 return
             try:
+                if not await self.repository.contact_opted_in(delivery.get("contact_id"), delivery["phone"]):
+                    await self.repository.mark_campaign_delivery(
+                        delivery["delivery_id"], "failed", error="Contact is no longer opted in"
+                    )
+                    continue
                 parameters = render_parameters(
                     campaign.get("parameter_mapping", []), delivery["variables"]
                 )

@@ -2,6 +2,8 @@ import { BellRing, CheckCircle2, KeyRound, Save, ShieldCheck } from 'lucide-reac
 import { useEffect, useState } from 'react'
 import api from '../api'
 import { PageTitle } from './Dashboard'
+import Waba from './Waba'
+import WebhookStatus from './WebhookStatus'
 
 const when = (value) => new Date(value).toLocaleString('en-IN', {
   dateStyle: 'medium',
@@ -12,6 +14,7 @@ export default function Settings() {
   const [form, setForm] = useState(null)
   const [days, setDays] = useState('1, 3')
   const [deliveries, setDeliveries] = useState([])
+  const [templates, setTemplates] = useState([])
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState('')
   const [error, setError] = useState('')
@@ -30,11 +33,23 @@ export default function Settings() {
       setDeliveries(deliveriesResponse.data)
     }).catch(() => setError('Could not load notification settings.'))
   }, [])
+  useEffect(() => { api.get('/api/templates').then(({ data }) => setTemplates(Array.isArray(data) ? data.filter((item) => item.status === 'APPROVED' && !['IMAGE', 'VIDEO', 'DOCUMENT'].includes(item.header_format)) : [])).catch(() => {}) }, [])
 
   const set = (key) => (event) => setForm((value) => ({
     ...value,
     [key]: event.target.type === 'checkbox' ? event.target.checked : event.target.value,
   }))
+  const templateSelector = (prefix) => {
+    const nameKey = `${prefix}_meta_template`; const languageKey = `${prefix}_meta_language`; const mappingKey = `${prefix}_meta_parameters`
+    const chosen = templates.find((item) => item.name === form[nameKey] && item.language === (form[languageKey] || 'en_US'))
+    const count = Math.max(0, ...[...(chosen?.body?.matchAll(/\{\{(\d+)\}\}/g) || [])].map((item) => Number(item[1])))
+    const mapping = form[mappingKey] || ['name']
+    return <><label>Approved WhatsApp template<select value={chosen?.id || ''} onChange={(event) => {
+      const template = templates.find((item) => String(item.id) === event.target.value)
+      const variableCount = Math.max(0, ...[...(template?.body?.matchAll(/\{\{(\d+)\}\}/g) || [])].map((item) => Number(item[1])))
+      setForm((value) => ({ ...value, [nameKey]: template?.name || '', [languageKey]: template?.language || 'en_US', [mappingKey]: Array(variableCount).fill('name') }))
+    }}><option value="">None — free text only within the 24-hour reply window</option>{templates.map((item) => <option key={item.id} value={item.id}>{item.name} ({item.language})</option>)}</select><small>{chosen ? 'This approved message is sent instead of the free text above.' : form[nameKey] ? `Saved template ${form[nameKey]} is unavailable or not approved; select another.` : 'Select an approved template to send outside the 24-hour reply window.'}</small></label>{chosen && <p className="muted">{chosen.body}</p>}{chosen && Array.from({ length: count }, (_, index) => <label key={index}>Value for {`{{${index + 1}}}`}<select value={mapping[index] || ''} onChange={(event) => setForm((value) => ({ ...value, [mappingKey]: Array.from({ length: count }, (_, position) => position === index ? event.target.value : mapping[position] || 'name') }))}><option value="">Choose value</option>{(prefix === 'reminder' ? ['name', 'date', 'time', 'minutes'] : ['name', 'date', 'time', 'days']).map((value) => <option key={value}>{value}</option>)}</select></label>)}</>
+  }
 
   async function save(event) {
     event.preventDefault()
@@ -43,8 +58,17 @@ export default function Settings() {
     setNotice('')
     const followupDays = days.split(',').map((value) => Number(value.trim())).filter(Boolean)
     try {
+      const normalized = { ...form }
+      for (const prefix of ['reminder', 'followup']) {
+        const mappingKey = `${prefix}_meta_parameters`
+        const template = templates.find((item) => item.name === form[`${prefix}_meta_template`] && item.language === (form[`${prefix}_meta_language`] || 'en_US'))
+        if (!normalized[mappingKey] && template) {
+          const count = Math.max(0, ...[...(template.body?.matchAll(/\{\{(\d+)\}\}/g) || [])].map((item) => Number(item[1])))
+          normalized[mappingKey] = Array(count).fill('name')
+        }
+      }
       const { data } = await api.put('/api/settings/notifications', {
-        ...form,
+        ...normalized,
         reminder_minutes_before: Number(form.reminder_minutes_before),
         followup_days: followupDays,
       })
@@ -75,7 +99,7 @@ export default function Settings() {
     } finally { setPasswordBusy(false) }
   }
 
-  if (!form) return <div className="screen-center">Loading settings…</div>
+  if (!form) return <div className="screen-center">{error || 'Loading settings…'}</div>
 
   return (
     <>
@@ -90,14 +114,14 @@ export default function Settings() {
           <label className="toggle-row"><span><strong>Enable reminders</strong><small>Pause without deleting your template.</small></span><input type="checkbox" checked={form.reminder_enabled} onChange={set('reminder_enabled')} /></label>
           <label>Minutes before the meeting<input type="number" min="15" max="1440" value={form.reminder_minutes_before} onChange={set('reminder_minutes_before')} required /></label>
           <label>Reminder message<textarea rows="7" value={form.reminder_template} onChange={set('reminder_template')} required /></label>
-          <label>Approved Meta template name<input value={form.reminder_meta_template || ''} onChange={set('reminder_meta_template')} placeholder="meeting_reminder" /><small>Required when the 24-hour service window is closed.</small></label>
+          {templateSelector('reminder')}
         </section>
         <section className="panel settings-panel">
           <div className="settings-heading"><CheckCircle2 /><div><h2>Meeting follow-ups</h2><p>Send after confirmed, scheduled, or completed calls.</p></div></div>
           <label className="toggle-row"><span><strong>Enable follow-ups</strong><small>Each configured delay sends once.</small></span><input type="checkbox" checked={form.followup_enabled} onChange={set('followup_enabled')} /></label>
           <label>Days after meeting<input value={days} onChange={(event) => setDays(event.target.value)} placeholder="1, 3" required /><small>Comma-separated days, from 1 to 90.</small></label>
           <label>Follow-up message<textarea rows="7" value={form.followup_template} onChange={set('followup_template')} required /></label>
-          <label>Approved Meta template name<input value={form.followup_meta_template || ''} onChange={set('followup_meta_template')} placeholder="meeting_followup" /><small>The template must be approved in Message Templates.</small></label>
+          {templateSelector('followup')}
         </section>
         <div className="settings-actions span-2">
           <div>{error && <div className="alert error">{error}</div>}{notice && <div className="alert success">{notice}</div>}</div>
@@ -106,7 +130,7 @@ export default function Settings() {
       </form>
       <section className="panel">
         <div className="panel-title"><h2>Recent notification deliveries</h2></div>
-        <div className="table-wrap"><table><thead><tr><th>Contact</th><th>Type</th><th>Meeting</th><th>Sent</th></tr></thead><tbody>{deliveries.map((item) => <tr key={item.id}><td><strong>{item.name}</strong><small>{item.recipient}</small></td><td>{item.notification_key.replaceAll('_', ' ')}</td><td>{when(item.start_at)}</td><td>{when(item.sent_at)}</td></tr>)}</tbody></table>{!deliveries.length && <div className="empty">No automated messages sent yet.</div>}</div>
+        <div className="table-wrap"><table><thead><tr><th>Contact</th><th>Type</th><th>Meeting</th><th>Last attempt</th><th>Status</th></tr></thead><tbody>{deliveries.map((item) => <tr key={item.id}><td><strong>{item.name}</strong><small>{item.recipient}</small></td><td>{item.notification_key.replaceAll('_', ' ')}</td><td>{when(item.start_at)}</td><td>{when(item.sent_at)}</td><td>{item.status}<small>{item.error || ''}</small></td></tr>)}</tbody></table>{!deliveries.length && <div className="empty">No automated messages attempted yet.</div>}</div>
       </section>
       <section className="panel account-settings">
         <div className="settings-heading"><ShieldCheck /><div><h2>Account security</h2><p>Change the password used to access this CRM.</p></div></div>
@@ -118,6 +142,7 @@ export default function Settings() {
         </form>
       </section>
       <div className="notice"><strong>Available placeholders</strong><p>{'{name}, {date}, {time}, {minutes}, {days}'}</p></div>
+      <details className="panel"><summary>Advanced WhatsApp connection and webhook settings</summary><p>These details are normally maintained by your administrator.</p><Waba embedded /><WebhookStatus embedded /></details>
     </>
   )
 }

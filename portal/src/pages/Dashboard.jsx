@@ -5,17 +5,19 @@ import api from '../api'
 
 const colors = ['#ffb000', '#28c7a9', '#5b8cff', '#ef6f6c', '#a78bfa', '#94a3b8']
 const human = (value = '') => value.replaceAll('_', ' ').replace(/\b\w/g, (letter) => letter.toUpperCase())
-const when = (value) => value ? new Date(value).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' }) : 'Awaiting slot'
+const when = (value) => value ? new Date(value).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Kolkata' }) : 'Awaiting slot'
 
 export default function Dashboard() {
   const [data, setData] = useState(null)
-  useEffect(() => { api.get('/api/dashboard/analytics').then(({ data }) => setData(data)) }, [])
+  const [error, setError] = useState('')
+  useEffect(() => { api.get('/api/dashboard/analytics').then(({ data }) => setData(data)).catch(() => setError('Could not load dashboard data. Please refresh and try again.')) }, [])
   const stats = [
     ['CRM contacts', data?.total_contacts, ContactRound], ['Meeting requests', data?.total_meetings, MessagesSquare],
     ['Upcoming', data?.upcoming_meetings, CalendarClock], ['Today', data?.today_meetings, CalendarCheck],
   ]
   return <>
     <PageTitle kicker="OPERATIONS OVERVIEW" title="Meeting intelligence" subtitle="From first WhatsApp enquiry to confirmed technical discussion." />
+    {error && <div className="alert error" role="alert">{error}</div>}
     <div className="stats-grid">{stats.map(([label, value, Icon]) => <div className="stat-card" key={label}><div className="stat-icon"><Icon size={20} /></div><div><span>{label}</span><strong>{value ?? '—'}</strong></div></div>)}</div>
     <div className="chart-grid">
       <section className="panel"><PanelTitle title="Requests by status" /><ResponsiveContainer width="100%" height={260}><PieChart><Pie data={data?.by_status || []} dataKey="count" nameKey="status" innerRadius={58} outerRadius={96} paddingAngle={3}>{(data?.by_status || []).map((_, index) => <Cell key={index} fill={colors[index % colors.length]} />)}</Pie><Tooltip formatter={(value, name) => [value, human(name)]} /></PieChart></ResponsiveContainer><Legend rows={data?.by_status || []} labelKey="status" /></section>

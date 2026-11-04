@@ -1,4 +1,4 @@
-import { BarChart3, CalendarDays, ContactRound, FileText, LogOut, Megaphone, MessagesSquare, Radio, Settings, Webhook } from 'lucide-react'
+import { BarChart3, CalendarDays, ContactRound, FileText, LogOut, Megaphone, MessagesSquare, Settings } from 'lucide-react'
 import { NavLink } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 
@@ -8,9 +8,7 @@ const links = [
   ['/campaigns', 'Campaigns', Megaphone],
   ['/meetings', 'Meetings', CalendarDays],
   ['/crm', 'CRM Contacts', ContactRound],
-  ['/waba', 'WABA Status', Radio],
   ['/templates', 'Templates', FileText],
-  ['/webhook-status', 'Webhook', Webhook],
   ['/settings', 'Settings', Settings],
 ]
 

@@ -2,10 +2,10 @@ import { Bot, Headphones, Loader2, RefreshCw, Search, Send, UserRound, X } from 
 import { useEffect, useState } from 'react'
 import api from '../api'
 import useDebouncedValue from '../hooks/useDebouncedValue'
-import { PageTitle, Status } from './Dashboard'
+import { PageTitle } from './Dashboard'
 
 const first = (...values) => values.find((value) => value !== undefined && value !== null && value !== '')
-const when = (value) => value ? new Date(value).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' }) : 'No activity yet'
+const when = (value) => value ? new Date(value).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Kolkata' }) : 'No activity yet'
 const person = (row = {}) => first(row.contact_name, row.profile_name, row.name, row.phone, row.wa_id, 'Unknown contact')
 const phone = (row = {}) => first(row.phone, row.wa_id, row.contact_phone, '—')
 const preview = (row = {}) => first(row.last_message, row.last_message_text, row.preview, row.message, 'No messages yet')
@@ -27,23 +27,56 @@ export default function Conversations() {
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [templates, setTemplates] = useState([])
+  const [templateId, setTemplateId] = useState('')
+  const [parameters, setParameters] = useState([])
+  const [offset, setOffset] = useState(0)
+  const [hasMore, setHasMore] = useState(false)
 
-  async function load() {
-    setLoading(true); setError('')
+  async function load(silent = false) {
+    if (!silent) { setLoading(true); setError('') }
     try {
       const { data } = await api.get('/api/conversations', { params: { q: debouncedQ } })
       setRows(Array.isArray(data) ? data : data?.items || data?.conversations || [])
     } catch (requestError) {
       setError(requestError.response?.data?.detail || 'Could not load WhatsApp conversations.')
-    } finally { setLoading(false) }
+    } finally { if (!silent) setLoading(false) }
   }
 
   useEffect(() => { load() }, [debouncedQ])
+  useEffect(() => {
+    api.get('/api/templates').then(({ data }) => setTemplates(Array.isArray(data) ? data.filter((item) => item.status === 'APPROVED' && !['IMAGE', 'VIDEO', 'DOCUMENT'].includes(item.header_format)) : [])).catch(() => {})
+  }, [])
+  useEffect(() => { const timer = window.setInterval(() => load(true), 10000); return () => window.clearInterval(timer) }, [debouncedQ])
+  useEffect(() => {
+    if (!selected?.id) return undefined
+    const id = selected.id
+    const timer = window.setInterval(() => api.get(`/api/conversations/${id}`).then(({ data }) => {
+      setSelected((current) => {
+        if (current?.id !== id) return current
+        const latest = normalizeDetail(data)
+        const byId = new Map([...current.messages, ...latest.messages].map((message) => [message.id, message]))
+        return { ...current, ...latest, messages: [...byId.values()].sort((a, b) => new Date(a.occurred_at) - new Date(b.occurred_at)) }
+      })
+    }).catch(() => {}), 10000)
+    return () => window.clearInterval(timer)
+  }, [selected?.id])
 
   async function open(id) {
     setError('')
-    try { const { data } = await api.get(`/api/conversations/${id}`); setSelected(normalizeDetail(data)) }
+    try { const { data } = await api.get(`/api/conversations/${id}`); if (selected?.id !== id) setReply(''); setSelected(normalizeDetail(data)); setOffset(0); setHasMore(Boolean(data.has_more_messages)); setTemplateId(''); setParameters([]) }
     catch (requestError) { setError(requestError.response?.data?.detail || 'Could not open this conversation.') }
+  }
+
+  async function loadOlder() {
+    setBusy(true); setError('')
+    try {
+      const next = offset + 100
+      const { data } = await api.get(`/api/conversations/${selected.id}`, { params: { message_offset: next } })
+      setSelected((current) => ({ ...current, messages: [...data.messages, ...current.messages] }))
+      setOffset(next); setHasMore(Boolean(data.has_more_messages))
+    } catch { setError('Could not load older messages.') }
+    finally { setBusy(false) }
   }
 
   async function changeControl(action) {
@@ -64,10 +97,10 @@ export default function Conversations() {
 
   async function send(event) {
     event.preventDefault()
-    if (!reply.trim()) return
+    if (!templateId && !reply.trim()) return
     setBusy(true); setError('')
     try {
-      await api.post(`/api/conversations/${selected.id}/messages`, { text: reply.trim(), template_id: null, parameters: [] })
+      await api.post(`/api/conversations/${selected.id}/messages`, { text: templateId ? null : reply.trim(), template_id: templateId ? Number(templateId) : null, parameters: templateId ? parameters : [] })
       setReply(''); await open(selected.id); await load()
     } catch (requestError) { setError(requestError.response?.data?.detail || 'Message could not be sent.') }
     finally { setBusy(false) }
@@ -75,7 +108,7 @@ export default function Conversations() {
 
   const messages = selected?.messages || []
   return <>
-    <PageTitle kicker="WHATSAPP INBOX" title="Conversations" subtitle="Monitor inbound enquiries, take over from automation, and reply from the CRM." action={<button className="secondary-button" onClick={load}><RefreshCw size={16} />Refresh</button>} />
+    <PageTitle kicker="WHATSAPP INBOX" title="Conversations" subtitle="Monitor inbound enquiries, take over from automation, and reply from the CRM." action={<button className="secondary-button" onClick={() => { load(); if (selected) open(selected.id) }}><RefreshCw size={16} />Refresh</button>} />
     {error && <div className="alert error">{error}</div>}
     <div className="conversation-shell">
       <section className="conversation-list panel no-pad">
@@ -101,16 +134,18 @@ export default function Conversations() {
             </div>
           </header>
           <div className="message-stream">
+            {hasMore && <button className="secondary-button compact" disabled={busy} onClick={loadOlder}>Load earlier messages</button>}
             {messages.length ? messages.map((message, index) => (
               <article key={message.id || index} className={`message-bubble ${incoming(message) ? 'inbound' : 'outbound'}`}>
                 <p>{messageText(message)}</p>
-                <small>{when(first(message.occurred_at, message.sent_at, message.created_at, message.timestamp))}</small>
+                <small>{when(first(message.occurred_at, message.sent_at, message.created_at, message.timestamp))}{!incoming(message) && message.status ? ` · ${message.status}` : ''}</small>
               </article>
             )) : <div className="empty"><UserRound size={24} /> No messages in this conversation yet.</div>}
           </div>
           <form className="message-composer" onSubmit={send}>
-            <textarea aria-label="Reply message" rows="2" value={reply} onChange={(event) => setReply(event.target.value)} placeholder={isHuman(selected) ? 'Type a WhatsApp reply…' : 'Take over to send a manual reply…'} disabled={!isHuman(selected) || busy} />
-            <button className="primary-button" disabled={!isHuman(selected) || busy || !reply.trim()}><Send size={16} />Send</button>
+            <div className="reply-fields"><p className="muted">{selected.service_window_open === false ? 'The 24-hour reply window is closed. Choose an approved template.' : 'Take over to reply. Approved templates can be used when the reply window is closed.'}</p><label>Message type<select aria-label="Message type" value={templateId} onChange={(event) => { const id = event.target.value; const template = templates.find((item) => String(item.id) === id); const count = Math.max(0, ...[...(template?.body?.matchAll(/\{\{(\d+)\}\}/g) || [])].map((item) => Number(item[1]))); setTemplateId(id); setParameters(Array(count).fill('')) }}><option value="">Free text</option>{templates.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}</select></label>
+            {templateId ? <><p>{templates.find((item) => String(item.id) === templateId)?.body}</p>{parameters.map((value, index) => <label key={index}>Value for {`{{${index + 1}}}`}<input required value={value} onChange={(event) => setParameters((current) => current.map((item, position) => position === index ? event.target.value : item))} /></label>)}</> : <textarea aria-label="Reply message" rows="2" value={reply} onChange={(event) => setReply(event.target.value)} placeholder={isHuman(selected) ? 'Type a WhatsApp reply…' : 'Take over to send a manual reply…'} disabled={!isHuman(selected) || busy || selected.service_window_open === false} />}</div>
+            <button className="primary-button" disabled={!isHuman(selected) || busy || (!templateId && (!reply.trim() || selected.service_window_open === false)) || (templateId && parameters.some((value) => !value.trim()))}><Send size={16} />Send</button>
           </form>
         </> : <div className="conversation-placeholder"><Bot size={34} /><h2>Select a conversation</h2><p>Messages and control options will appear here.</p></div>}
       </section>

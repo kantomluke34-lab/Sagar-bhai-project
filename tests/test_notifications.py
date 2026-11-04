@@ -18,6 +18,7 @@ def meeting() -> dict:
 async def test_free_text_is_blocked_outside_service_window() -> None:
     repository = AsyncMock()
     repository.delivery_exists.return_value = False
+    repository.list_templates.return_value = [{"name": "meeting_reminder", "language": "en_US", "status": "APPROVED", "body": "Hello {{1}}"}]
     repository.within_service_window.return_value = False
     waba = AsyncMock()
     scheduler = NotificationScheduler(repository, waba)
@@ -33,6 +34,7 @@ async def test_free_text_is_blocked_outside_service_window() -> None:
 async def test_approved_template_can_send_outside_service_window() -> None:
     repository = AsyncMock()
     repository.delivery_exists.return_value = False
+    repository.list_templates.return_value = [{"name": "meeting_reminder", "language": "en_US", "status": "APPROVED", "body": "Hello {{1}}"}]
     waba = AsyncMock()
     waba.send_template.return_value = "wamid.1"
     scheduler = NotificationScheduler(repository, waba)

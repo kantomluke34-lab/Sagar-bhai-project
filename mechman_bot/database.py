@@ -56,6 +56,7 @@ class Contact(Base, TimestampMixin):
     designation: Mapped[str | None] = mapped_column(String(160))
     city: Mapped[str | None] = mapped_column(String(120))
     lead_stage: Mapped[str] = mapped_column(String(30), default="new", index=True)
+    lead_status: Mapped[str] = mapped_column(String(20), default="open", server_default="open")
     source: Mapped[str] = mapped_column(String(40), default="whatsapp")
     assigned_to: Mapped[str | None] = mapped_column(String(160))
     notes: Mapped[str | None] = mapped_column(Text)
@@ -299,6 +300,7 @@ class NotificationDelivery(Base):
     recipient: Mapped[str] = mapped_column(String(32))
     message: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(30), default="sent")
+    error: Mapped[str | None] = mapped_column(Text)
     wa_message_id: Mapped[str | None] = mapped_column(String(200))
     sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -320,6 +322,8 @@ class Database:
                     "ADD COLUMN IF NOT EXISTS header_format VARCHAR(20) NOT NULL DEFAULT 'NONE'"
                 )
             )
+            await connection.execute(text("ALTER TABLE notification_deliveries ADD COLUMN IF NOT EXISTS error TEXT"))
+            await connection.execute(text("ALTER TABLE contacts ADD COLUMN IF NOT EXISTS lead_status VARCHAR(20) NOT NULL DEFAULT 'open'"))
 
     async def dispose(self) -> None:
         await self.engine.dispose()

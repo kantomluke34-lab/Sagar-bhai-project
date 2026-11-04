@@ -406,3 +406,8 @@ textarea { resize: vertical; }
   .webhook-flow { grid-template-columns: 1fr; }
   .webhook-flow > svg { margin: auto; transform: none; }
 }
+
+.crm-table td { padding: 9px 14px; }
+.pagination { display: flex; gap: 10px; align-items: center; justify-content: flex-end; padding: 12px 16px; border-top: 1px solid var(--line); }
+.pagination span { margin-right: auto; color: var(--muted); font-size: 13px; }
+.reply-fields { min-width: 0; display: grid; gap: 8px; }

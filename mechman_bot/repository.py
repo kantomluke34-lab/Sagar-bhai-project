@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
-from sqlalchemy import delete, func, or_, select, update
+from sqlalchemy import and_, case, delete, func, or_, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
@@ -45,6 +48,12 @@ DEFAULT_NOTIFICATION_SETTINGS = {
         "on {date}. Is there anything you would like us to clarify?"
     ),
 }
+
+
+def phone_aliases(phone: str) -> list[str]:
+    if len(phone) == 12 and phone.startswith("91") and phone[2] in "6789":
+        return [phone, phone[2:]]
+    return [phone]
 
 
 class CRMRepository:
@@ -162,6 +171,7 @@ class CRMRepository:
                         Contact.name.ilike(pattern),
                         Contact.phone.ilike(pattern),
                         Contact.company.ilike(pattern),
+                        select(Message.id).where(Message.conversation_id == Conversation.id, Message.body.ilike(pattern)).exists(),
                     )
                 )
             rows = (await session.scalars(statement)).all()
@@ -227,13 +237,14 @@ class CRMRepository:
             await session.refresh(message)
             return as_dict(message)
 
-    async def list_messages(self, conversation_id: int, limit: int = 200) -> list[dict[str, Any]]:
+    async def list_messages(self, conversation_id: int, limit: int = 200, offset: int = 0) -> list[dict[str, Any]]:
         async with self.database.session_factory() as session:
             rows = (
                 await session.scalars(
                     select(Message)
                     .where(Message.conversation_id == conversation_id)
-                    .order_by(Message.occurred_at.desc())
+                    .order_by(Message.occurred_at.desc(), Message.id.desc())
+                    .offset(offset)
                     .limit(limit)
                 )
             ).all()
@@ -276,9 +287,19 @@ class CRMRepository:
             if row or delivery:
                 await session.commit()
 
-    async def create_meeting(self, data: dict[str, Any]) -> dict[str, Any]:
+    async def create_meeting(self, data: dict[str, Any], changed_by: str = "booking_form") -> dict[str, Any]:
         async with self.database.session_factory() as session:
-            contact = await session.scalar(select(Contact).where(Contact.phone == data["phone"]))
+            # Serialize calendar writes so simultaneous requests cannot claim the same slot.
+            await session.execute(select(func.pg_advisory_xact_lock(1296384835)))
+            if data.get("status", "requested") in {"requested", "confirmed", "scheduled"}:
+                conflict = await session.scalar(select(Meeting.id).where(
+                    Meeting.status.in_(["requested", "confirmed", "scheduled"]),
+                    Meeting.start_at < data["end_at"], Meeting.end_at > data["start_at"],
+                ).limit(1))
+                if conflict is not None:
+                    raise ValueError("That slot is no longer available")
+            matches = (await session.scalars(select(Contact).where(Contact.phone.in_(phone_aliases(data["phone"])) ))).all()
+            contact = next((item for item in matches if item.phone == data["phone"]), matches[0] if matches else None)
             if contact is None:
                 contact = Contact(
                     name=data["name"],
@@ -291,9 +312,9 @@ class CRMRepository:
             else:
                 contact.name = data["name"] or contact.name
                 contact.email = data.get("email") or contact.email
-            conversation = await session.scalar(
-                select(Conversation).where(Conversation.phone == data["phone"])
-            )
+            if "lead_stage" in data:
+                contact.lead_stage = data["lead_stage"]
+            conversation = await session.scalar(select(Conversation).where(Conversation.contact_id == contact.id))
             meeting = Meeting(
                 contact_id=contact.id,
                 conversation_id=conversation.id if conversation else None,
@@ -310,7 +331,7 @@ class CRMRepository:
                     meeting_id=meeting.id,
                     action="meeting_created",
                     new_value=meeting.status,
-                    changed_by="booking_form",
+                    changed_by=changed_by,
                 )
             )
             await session.commit()
@@ -322,7 +343,7 @@ class CRMRepository:
             rows = (
                 await session.scalars(
                     select(Meeting).where(
-                        Meeting.status.not_in(["cancelled", "no_show"]),
+                        Meeting.status.in_(["requested", "confirmed", "scheduled"]),
                         Meeting.start_at < ends,
                         Meeting.end_at > begins,
                     )
@@ -342,6 +363,7 @@ class CRMRepository:
                         Meeting.name.ilike(pattern),
                         Meeting.phone.ilike(pattern),
                         Meeting.company.ilike(pattern),
+                        Meeting.interest.ilike(pattern),
                         Meeting.purpose.ilike(pattern),
                     )
                 )
@@ -376,9 +398,23 @@ class CRMRepository:
         self, meeting_id: int, values: dict[str, Any], changed_by: str
     ) -> dict[str, Any] | None:
         async with self.database.session_factory() as session:
+            await session.execute(select(func.pg_advisory_xact_lock(1296384835)))
             meeting = await session.get(Meeting, meeting_id)
             if not meeting:
                 return None
+            start = values.get("start_at", meeting.start_at)
+            end = values.get("end_at", meeting.end_at)
+            status = values.get("status", meeting.status)
+            if start.tzinfo is None or end.tzinfo is None or end <= start:
+                raise ValueError("Choose a valid start and end time with a timezone")
+            if status in {"requested", "confirmed", "scheduled"}:
+                conflict = await session.scalar(select(Meeting.id).where(
+                    Meeting.id != meeting_id,
+                    Meeting.status.in_(["requested", "confirmed", "scheduled"]),
+                    Meeting.start_at < end, Meeting.end_at > start,
+                ).limit(1))
+                if conflict is not None:
+                    raise ValueError("That slot is no longer available")
             for key, value in values.items():
                 if not hasattr(meeting, key):
                     continue
@@ -394,45 +430,95 @@ class CRMRepository:
                             changed_by=changed_by,
                         )
                     )
+            if "lead_stage" in values:
+                contact = await session.get(Contact, meeting.contact_id)
+                if contact:
+                    contact.lead_stage = values["lead_stage"]
             await session.commit()
-            await session.refresh(meeting)
-            return as_dict(meeting)
+        return await self.get_meeting(meeting_id)
 
-    async def list_contacts(self, query: str = "") -> list[dict[str, Any]]:
+    async def list_contacts(
+        self, query: str = "", page: int | None = None, page_size: int = 50
+    ) -> list[dict[str, Any]] | dict[str, Any]:
         async with self.database.session_factory() as session:
-            statement = select(Contact).order_by(Contact.updated_at.desc())
+            activity = select(
+                Meeting.contact_id.label("contact_id"),
+                func.count(Meeting.id).label("meeting_count"),
+                func.max(Meeting.updated_at).label("last_activity"),
+                func.min(case((and_(
+                    Meeting.start_at >= datetime.now(UTC),
+                    Meeting.status.in_(["requested", "confirmed", "scheduled"]),
+                ), Meeting.start_at))).label("next_meeting"),
+            ).group_by(Meeting.contact_id).subquery()
+            statement = (select(Contact, ContactConsent, activity.c.meeting_count,
+                                activity.c.last_activity, activity.c.next_meeting)
+                .outerjoin(ContactConsent, ContactConsent.contact_id == Contact.id)
+                .outerjoin(activity, activity.c.contact_id == Contact.id)
+                .order_by(Contact.updated_at.desc(), Contact.id.desc()))
+            count_statement = select(func.count(Contact.id))
             if query:
                 pattern = f"%{query}%"
-                statement = statement.where(
-                    or_(
-                        Contact.name.ilike(pattern),
-                        Contact.phone.ilike(pattern),
-                        Contact.company.ilike(pattern),
-                    )
-                )
-            contacts = (await session.scalars(statement)).all()
+                condition = or_(Contact.name.ilike(pattern), Contact.phone.ilike(pattern),
+                                Contact.company.ilike(pattern), Contact.email.ilike(pattern))
+                statement = statement.where(condition)
+                count_statement = count_statement.where(condition)
+            total = await session.scalar(count_statement) if page is not None else None
+            if page is not None:
+                statement = statement.offset((page - 1) * page_size).limit(page_size)
+            contacts = (await session.execute(statement)).all()
             results = []
-            for contact in contacts:
+            for contact, consent, meeting_count, last_activity, next_meeting in contacts:
                 item = as_dict(contact)
-                consent = await session.get(ContactConsent, contact.id)
                 item["consent_status"] = consent.status if consent else "unknown"
                 item["consent_source"] = consent.source if consent else None
                 item["consent_captured_at"] = consent.captured_at if consent else None
-                meetings = (
-                    await session.scalars(select(Meeting).where(Meeting.contact_id == contact.id))
-                ).all()
-                item["meeting_count"] = len(meetings)
-                upcoming = [
-                    m.start_at
-                    for m in meetings
-                    if m.start_at >= datetime.now(UTC) and m.status not in {"cancelled", "no_show"}
-                ]
-                item["next_meeting"] = min(upcoming) if upcoming else None
-                item["last_activity"] = max(
-                    (m.updated_at for m in meetings), default=contact.updated_at
-                )
+                item["meeting_count"] = meeting_count or 0
+                item["next_meeting"] = next_meeting
+                item["last_activity"] = last_activity or contact.updated_at
                 results.append(item)
-            return results
+            return {"items": results, "total": total, "page": page, "page_size": page_size} if page is not None else results
+
+    async def save_contact(self, values: dict[str, Any], contact_id: int | None = None) -> dict[str, Any] | None:
+        async with self.database.session_factory() as session:
+            contact = await session.get(Contact, contact_id) if contact_id else Contact()
+            if contact is None:
+                return None
+            duplicate = await session.scalar(select(Contact.id).where(
+                Contact.phone.in_(phone_aliases(values["phone"])), Contact.id != (contact_id or 0),
+            ).limit(1))
+            if duplicate is not None:
+                raise ValueError("A contact with this phone number already exists")
+            if contact_id and values.get("phone") != contact.phone:
+                conversation = await session.scalar(select(Conversation).where(Conversation.contact_id == contact_id))
+                if conversation:
+                    raise ValueError("This contact has a WhatsApp conversation. Its phone number cannot be changed here.")
+                await session.execute(update(Meeting).where(Meeting.contact_id == contact_id).values(phone=values["phone"]))
+            for key, value in values.items():
+                setattr(contact, key, value)
+            session.add(contact)
+            try:
+                await session.commit()
+            except IntegrityError as exc:
+                raise ValueError("A contact with this phone number already exists") from exc
+            await session.refresh(contact)
+            return as_dict(contact)
+
+    async def import_contacts(self, rows: list[dict[str, Any]]) -> dict[str, int]:
+        async with self.database.session_factory() as session:
+            phones = {alias for row in rows for alias in phone_aliases(row["phone"])}
+            existing = set((await session.scalars(select(Contact.phone).where(Contact.phone.in_(phones)))).all())
+            added = 0
+            for row in rows:
+                if any(alias in existing for alias in phone_aliases(row["phone"])):
+                    continue
+                existing.add(row["phone"])
+                session.add(Contact(**{**row, "source": "crm_import"}))
+                added += 1
+            try:
+                await session.commit()
+            except IntegrityError as exc:
+                raise ValueError("A contact was added concurrently; refresh and retry the import") from exc
+            return {"added": added, "duplicates": len(rows) - added}
 
     async def get_contact(self, contact_id: int) -> dict[str, Any] | None:
         async with self.database.session_factory() as session:
@@ -457,14 +543,14 @@ class CRMRepository:
     async def analytics(self) -> dict[str, Any]:
         async with self.database.session_factory() as session:
             now = datetime.now(UTC)
-            today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            today_start = now.astimezone(ZoneInfo("Asia/Kolkata")).replace(hour=0, minute=0, second=0, microsecond=0).astimezone(UTC)
             today_end = today_start + timedelta(days=1)
             total = await session.scalar(select(func.count(Meeting.id))) or 0
             upcoming = (
                 await session.scalar(
                     select(func.count(Meeting.id)).where(
                         Meeting.start_at >= datetime.now(UTC),
-                        Meeting.status.not_in(["cancelled", "no_show"]),
+                        Meeting.status.in_(["requested", "confirmed", "scheduled"]),
                     )
                 )
                 or 0
@@ -564,17 +650,27 @@ class CRMRepository:
                 select(func.count(NotificationDelivery.id)).where(
                     NotificationDelivery.meeting_id == meeting_id,
                     NotificationDelivery.notification_key == key,
+                    NotificationDelivery.status != "failed",
                 )
             )
             return bool(count)
 
     async def add_delivery(self, **values: Any) -> None:
         async with self.database.session_factory() as session:
-            session.add(NotificationDelivery(**values))
-            try:
-                await session.commit()
-            except IntegrityError:
-                await session.rollback()
+            statement = pg_insert(NotificationDelivery).values(**values)
+            statement = statement.on_conflict_do_update(
+                index_elements=["meeting_id", "notification_key"],
+                set_={"status": statement.excluded.status, "message": statement.excluded.message,
+                      "wa_message_id": statement.excluded.wa_message_id, "error": statement.excluded.error,
+                      "sent_at": func.now()},
+                where=NotificationDelivery.status == "failed",
+            )
+            await session.execute(statement)
+            await session.commit()
+
+    async def record_notification_failure(self, meeting: dict[str, Any], key: str, message: str, error: str) -> None:
+        await self.add_delivery(meeting_id=meeting["id"], notification_key=key, recipient=meeting["phone"],
+                                message=message, status="failed", error=error[:2000])
 
     async def notification_candidates(self, start: datetime, end: datetime) -> list[dict[str, Any]]:
         async with self.database.session_factory() as session:
@@ -698,6 +794,9 @@ class CRMRepository:
             for row in rows:
                 item = as_dict(row)
                 item["recipient_count"] = len(await self._resolve_list_rows(session, row))
+                item["member_ids"] = list((await session.scalars(
+                    select(RecipientListMember.contact_id).where(RecipientListMember.list_id == row.id)
+                )).all()) if row.list_type == "static" else []
                 results.append(item)
             return results
 
@@ -791,7 +890,12 @@ class CRMRepository:
                 if phone in seen:
                     continue
                 seen.add(phone)
-                contact = await session.scalar(select(Contact).where(Contact.phone == phone))
+                matches = (await session.scalars(select(Contact).where(Contact.phone.in_(phone_aliases(phone))))).all()
+                for candidate in matches:
+                    prior_consent = await session.get(ContactConsent, candidate.id)
+                    if prior_consent and prior_consent.status == "opted_out":
+                        raise ValueError("A recipient has opted out. Remove them before scheduling.")
+                contact = next((item for item in matches if item.phone == phone), matches[0] if matches else None)
                 if contact is None:
                     contact = Contact(
                         name=str(source.get("name") or "WhatsApp contact"),
@@ -807,17 +911,20 @@ class CRMRepository:
                 if consent is None:
                     consent = ContactConsent(contact_id=contact.id)
                     session.add(consent)
-                consent.status = "opted_in"
-                consent.source = str(source["consent_source"])
-                consent.captured_at = source["consent_captured_at"]
-                consent.evidence = dict(source.get("consent_evidence") or {})
+                if consent.status == "opted_out":
+                    raise ValueError("A recipient has opted out. Remove them before scheduling.")
+                if consent.status != "opted_in":
+                    consent.status = "opted_in"
+                    consent.source = str(source["consent_source"])
+                    consent.captured_at = source["consent_captured_at"]
+                    consent.evidence = dict(source.get("consent_evidence") or {})
                 session.add(
                     CampaignRecipient(
                         campaign_id=campaign.id,
                         contact_id=contact.id,
                         phone=phone,
                         name=str(source.get("name") or contact.name),
-                        variables=dict(source.get("variables") or {}),
+                        variables=json.loads(json.dumps(source.get("variables") or {}, default=str)),
                         consent_source=str(source["consent_source"]),
                         consent_captured_at=source["consent_captured_at"],
                     )
@@ -1010,6 +1117,29 @@ class CRMRepository:
             campaign_id, run_id = campaign.id, run.id
         return await self._campaign_workload(campaign_id, run_id)
 
+    async def recover_stalled_campaigns(self) -> None:
+        # A process can disappear after sending but before recording a response.
+        # Mark pending items for review instead of automatically resending them.
+        cutoff = datetime.now(UTC) - timedelta(minutes=10)
+        async with self.database.session_factory() as session:
+            campaigns = (await session.scalars(select(Campaign).where(
+                Campaign.status == "running", Campaign.updated_at < cutoff,
+            ).with_for_update(skip_locked=True))).all()
+            for campaign in campaigns:
+                run = await session.scalar(select(CampaignRun).where(
+                    CampaignRun.campaign_id == campaign.id, CampaignRun.status == "running",
+                ).order_by(CampaignRun.run_number.desc()).limit(1))
+                campaign.status = "failed"
+                if run:
+                    run.status = "failed"
+                    run.finished_at = datetime.now(UTC)
+                    await session.execute(update(CampaignDelivery).where(
+                        CampaignDelivery.run_id == run.id, CampaignDelivery.status == "pending",
+                    ).values(status="failed", error="Interrupted; verify delivery before retrying."))
+                await session.flush()
+                await self._refresh_campaign_counts(session, campaign.id)
+            await session.commit()
+
     async def _campaign_workload(self, campaign_id: int, run_id: int) -> dict[str, Any]:
         async with self.database.session_factory() as session:
             campaign = await session.get(Campaign, campaign_id)
@@ -1032,6 +1162,7 @@ class CRMRepository:
                 "deliveries": [
                     {
                         "delivery_id": delivery.id,
+                        "contact_id": recipient.contact_id,
                         "phone": recipient.phone,
                         "variables": recipient.variables,
                     }
@@ -1042,6 +1173,18 @@ class CRMRepository:
     async def campaign_status(self, campaign_id: int) -> str:
         async with self.database.session_factory() as session:
             return str(await session.scalar(select(Campaign.status).where(Campaign.id == campaign_id)))
+
+    async def contact_opted_in(self, contact_id: int | None, phone: str) -> bool:
+        if contact_id is None:
+            return False
+        async with self.database.session_factory() as session:
+            consent = await session.get(ContactConsent, contact_id)
+            if not consent or consent.status != "opted_in":
+                return False
+            opted_out = await session.scalar(select(Contact.id).join(
+                ContactConsent, ContactConsent.contact_id == Contact.id,
+            ).where(Contact.phone.in_(phone_aliases(phone)), ContactConsent.status == "opted_out").limit(1))
+            return opted_out is None
 
     async def mark_campaign_delivery(
         self,
@@ -1072,11 +1215,14 @@ class CRMRepository:
         campaign = await session.get(Campaign, campaign_id)
         if not campaign:
             return
+        latest_run = await session.scalar(select(CampaignRun.id).where(
+            CampaignRun.campaign_id == campaign_id
+        ).order_by(CampaignRun.run_number.desc()).limit(1))
         statuses = (
             await session.execute(
                 select(CampaignDelivery.status, func.count(CampaignDelivery.id))
                 .join(CampaignRun, CampaignRun.id == CampaignDelivery.run_id)
-                .where(CampaignRun.campaign_id == campaign_id)
+                .where(CampaignRun.id == latest_run)
                 .group_by(CampaignDelivery.status)
             )
         ).all()
@@ -1137,6 +1283,8 @@ class CRMRepository:
                     .where(CampaignDelivery.run_id == run_id, CampaignDelivery.status == "pending")
                     .values(status="failed", error=error)
                 )
+            await session.flush()
+            await self._refresh_campaign_counts(session, campaign_id)
             await session.commit()
 
     async def interrupt_campaign_run(self, campaign_id: int, run_id: int, status: str) -> None:

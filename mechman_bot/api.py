@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import string
 import uuid
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
@@ -14,7 +15,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .auth import create_access_token, current_user_dependency, hash_password, verify_password
-from .campaigns import infer_media_type, normalize_phone, parse_recipient_file
+from .campaigns import infer_media_type, normalize_phone, parse_recipient_file, render_parameters
 from .config import Settings
 from .repository import CRMRepository
 from .waba import WABAClient, WABAError
@@ -58,6 +59,8 @@ class PublicMeetingCreate(BaseModel):
     @classmethod
     def normalize_phone(cls, value: str) -> str:
         digits = "".join(character for character in value if character.isdigit())
+        if len(digits) == 10 and digits[0] in "6789":
+            digits = "91" + digits
         if not 8 <= len(digits) <= 15:
             raise ValueError("Enter a valid phone number")
         return digits
@@ -85,6 +88,31 @@ class MeetingUpdate(BaseModel):
         if value is not None and value not in LEAD_STAGES:
             raise ValueError("Invalid CRM stage")
         return value
+
+
+class AdminMeetingCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=160)
+    phone: str = Field(min_length=8, max_length=32)
+    email: str | None = Field(default=None, max_length=255)
+    company: str = Field(default="", max_length=200)
+    interest: str = Field(default="General enquiry", max_length=255)
+    purpose: str = Field(default="", max_length=2000)
+    meeting_mode: str = Field(default="Phone call", max_length=100)
+    start_at: datetime
+    end_at: datetime
+    status: Literal["requested", "confirmed", "scheduled", "completed", "cancelled", "no_show"] = "scheduled"
+    lead_stage: Literal["new", "qualified", "proposal", "won", "lost"] = "new"
+
+    @field_validator("phone")
+    @classmethod
+    def valid_phone(cls, value: str) -> str:
+        return PublicMeetingCreate.normalize_phone(value)
+
+    @model_validator(mode="after")
+    def valid_times(self) -> AdminMeetingCreate:
+        if self.start_at.tzinfo is None or self.end_at.tzinfo is None or self.end_at <= self.start_at:
+            raise ValueError("Choose a valid start and end time with a timezone")
+        return self
 
 
 class ManualMessage(BaseModel):
@@ -182,15 +210,40 @@ class ContactConsentUpdate(BaseModel):
         return self
 
 
+class ContactInput(BaseModel):
+    name: str = Field(min_length=2, max_length=160)
+    phone: str = Field(min_length=8, max_length=32)
+    email: str | None = Field(default=None, max_length=255)
+    company: str | None = Field(default=None, max_length=200)
+    designation: str | None = Field(default=None, max_length=160)
+    city: str | None = Field(default=None, max_length=120)
+    source: str = Field(default="manual", max_length=40)
+    lead_stage: Literal["new", "qualified", "proposal", "won", "lost"] = "new"
+    lead_status: Literal["open", "completed"] = "open"
+
+    @field_validator("phone")
+    @classmethod
+    def valid_phone(cls, value: str) -> str:
+        return PublicMeetingCreate.normalize_phone(value)
+
+
+class ContactImport(BaseModel):
+    rows: list[ContactInput] = Field(min_length=1, max_length=10_000)
+
+
 class NotificationSettings(BaseModel):
     reminder_enabled: bool
     reminder_minutes_before: int = Field(ge=15, le=1440)
     reminder_template: str = Field(min_length=1, max_length=4096)
     reminder_meta_template: str = Field(default="", max_length=512)
+    reminder_meta_language: str = Field(default="en_US", max_length=20)
+    reminder_meta_parameters: list[Literal["name", "date", "time", "minutes", "days"]] = Field(default_factory=lambda: ["name"], max_length=20)
     followup_enabled: bool
     followup_days: list[int] = Field(min_length=1, max_length=10)
     followup_template: str = Field(min_length=1, max_length=4096)
     followup_meta_template: str = Field(default="", max_length=512)
+    followup_meta_language: str = Field(default="en_US", max_length=20)
+    followup_meta_parameters: list[Literal["name", "date", "time", "minutes", "days"]] = Field(default_factory=lambda: ["name"], max_length=20)
 
     @field_validator("followup_days")
     @classmethod
@@ -198,6 +251,18 @@ class NotificationSettings(BaseModel):
         if any(value < 1 or value > 90 for value in values):
             raise ValueError("Follow-up days must be between 1 and 90")
         return sorted(set(values))
+
+    @field_validator("reminder_template", "followup_template")
+    @classmethod
+    def valid_message_placeholders(cls, value: str) -> str:
+        try:
+            parts = list(string.Formatter().parse(value))
+        except ValueError as exc:
+            raise ValueError("Use matching braces around placeholders") from exc
+        allowed = {"name", "date", "time", "minutes", "days"}
+        if any(field is not None and (field not in allowed or spec or conversion) for _, field, spec, conversion in parts):
+            raise ValueError("Use only the listed message placeholders")
+        return value
 
 
 def _slot(day: date, start: time, duration: int) -> tuple[datetime, datetime]:
@@ -283,9 +348,8 @@ def build_router(settings: Settings, repository: CRMRepository, waba: WABAClient
         begins, ends = _slot(
             payload.meeting_date, payload.start_time, settings.meeting_duration_minutes
         )
-        if await repository.busy_ranges(begins, ends):
-            raise HTTPException(status_code=409, detail="That slot is no longer available")
-        meeting = await repository.create_meeting(
+        try:
+            meeting = await repository.create_meeting(
             {
                 "name": payload.name,
                 "phone": payload.phone,
@@ -298,7 +362,9 @@ def build_router(settings: Settings, repository: CRMRepository, waba: WABAClient
                 "end_at": ends,
                 "source": "web_form",
             }
-        )
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         return {
             "meeting_id": meeting["id"],
             "status": meeting["status"],
@@ -321,6 +387,14 @@ def build_router(settings: Settings, repository: CRMRepository, waba: WABAClient
     ) -> list[dict[str, Any]]:
         return await repository.list_meetings(q, meeting_status, date_from, date_to)
 
+    @router.post("/api/meetings", status_code=status.HTTP_201_CREATED)
+    async def create_admin_meeting(payload: AdminMeetingCreate, user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+        try:
+            meeting = await repository.create_meeting({**payload.model_dump(), "source": "admin"}, str(user["username"]))
+            return await repository.get_meeting(meeting["id"]) or meeting
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
     @router.get("/api/meetings/{meeting_id}")
     async def meeting_detail(
         meeting_id: int, _: dict[str, Any] = Depends(current_user)
@@ -336,18 +410,46 @@ def build_router(settings: Settings, repository: CRMRepository, waba: WABAClient
         payload: MeetingUpdate,
         user: dict[str, Any] = Depends(current_user),
     ) -> dict[str, Any]:
-        result = await repository.update_meeting(
-            meeting_id, payload.model_dump(exclude_none=True), str(user["username"])
-        )
+        try:
+            result = await repository.update_meeting(
+                meeting_id, payload.model_dump(exclude_none=True), str(user["username"])
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         if not result:
             raise HTTPException(status_code=404, detail="Meeting not found")
         return result
 
     @router.get("/api/crm/contacts")
     async def contacts(
-        _: dict[str, Any] = Depends(current_user), q: str = ""
-    ) -> list[dict[str, Any]]:
-        return await repository.list_contacts(q)
+        _: dict[str, Any] = Depends(current_user), q: str = "",
+        page: int | None = Query(default=None, ge=1), page_size: int = Query(default=50, ge=1, le=100),
+    ) -> Any:
+        return await repository.list_contacts(q, page, page_size)
+
+    @router.post("/api/crm/contacts", status_code=status.HTTP_201_CREATED)
+    async def create_contact(payload: ContactInput, _: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+        try:
+            return await repository.save_contact(payload.model_dump()) or {}
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @router.post("/api/crm/contacts/import")
+    async def import_contacts(payload: ContactImport, _: dict[str, Any] = Depends(current_user)) -> dict[str, int]:
+        try:
+            return await repository.import_contacts([row.model_dump() for row in payload.rows])
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @router.put("/api/crm/contacts/{contact_id}")
+    async def update_contact(contact_id: int, payload: ContactInput, _: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+        try:
+            result = await repository.save_contact(payload.model_dump(), contact_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if not result:
+            raise HTTPException(status_code=404, detail="Contact not found")
+        return result
 
     @router.get("/api/crm/contacts/{contact_id}")
     async def contact_detail(
@@ -421,12 +523,16 @@ def build_router(settings: Settings, repository: CRMRepository, waba: WABAClient
 
     @router.get("/api/conversations/{conversation_id}")
     async def conversation_detail(
-        conversation_id: int, _: dict[str, Any] = Depends(current_user)
+        conversation_id: int, _: dict[str, Any] = Depends(current_user),
+        message_offset: int = Query(default=0, ge=0),
     ) -> dict[str, Any]:
         result = await repository.get_conversation(conversation_id)
         if not result:
             raise HTTPException(status_code=404, detail="Conversation not found")
-        result["messages"] = await repository.list_messages(conversation_id)
+        messages = await repository.list_messages(conversation_id, limit=101, offset=message_offset)
+        result["has_more_messages"] = len(messages) > 100
+        result["messages"] = messages[-100:]
+        result["service_window_open"] = await repository.within_service_window(conversation_id)
         return result
 
     @router.post("/api/conversations/{conversation_id}/take-over")
@@ -464,6 +570,8 @@ def build_router(settings: Settings, repository: CRMRepository, waba: WABAClient
             template = await repository.get_template(payload.template_id)
             if not template or template["status"] != "APPROVED":
                 raise HTTPException(status_code=422, detail="Choose an approved Meta template")
+            if template.get("category") == "MARKETING" and not await repository.contact_opted_in(conversation["contact_id"], conversation["phone"]):
+                raise HTTPException(status_code=409, detail="This contact has not opted in to campaign messages")
             expected_parameters = max(
                 [int(value) for value in re.findall(r"\{\{(\d+)\}\}", template["body"])],
                 default=0,
@@ -702,10 +810,18 @@ def build_router(settings: Settings, repository: CRMRepository, waba: WABAClient
             ]
         if not recipients:
             raise HTTPException(status_code=422, detail="Audience contains no opted-in recipients")
+        for recipient in recipients:
+            try:
+                render_parameters(payload.parameter_mapping, recipient["variables"])
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=f"Recipient data is incomplete: {exc}") from exc
         scheduled_at = payload.scheduled_at
         if scheduled_at.tzinfo is None:
             scheduled_at = scheduled_at.replace(tzinfo=IST)
-        return await repository.create_campaign(
+        if scheduled_at <= datetime.now(UTC):
+            raise HTTPException(status_code=422, detail="Choose a future campaign time")
+        try:
+            return await repository.create_campaign(
             {
                 "name": payload.name,
                 "template_id": payload.template_id,
@@ -721,7 +837,9 @@ def build_router(settings: Settings, repository: CRMRepository, waba: WABAClient
                 "created_by": str(user["username"]),
             },
             recipients,
-        )
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @router.post("/api/campaigns/{campaign_id}/{action}")
     async def campaign_action(
@@ -759,6 +877,18 @@ def build_router(settings: Settings, repository: CRMRepository, waba: WABAClient
     async def save_notification_settings(
         payload: NotificationSettings, _: dict[str, Any] = Depends(current_user)
     ) -> dict[str, Any]:
+        templates = await repository.list_templates()
+        for prefix in ("reminder", "followup"):
+            name = getattr(payload, f"{prefix}_meta_template")
+            if not name:
+                continue
+            language = getattr(payload, f"{prefix}_meta_language")
+            template = next((item for item in templates if item["name"] == name and item["language"] == language and item["status"] == "APPROVED"), None)
+            if not template or template.get("header_format") in {"IMAGE", "VIDEO", "DOCUMENT"}:
+                raise HTTPException(status_code=422, detail=f"Choose an approved text-only {prefix} template")
+            count = max([int(value) for value in re.findall(r"\{\{(\d+)\}\}", template["body"])], default=0)
+            if len(getattr(payload, f"{prefix}_meta_parameters")) != count:
+                raise HTTPException(status_code=422, detail=f"Map all {prefix} template variables")
         return await repository.save_notification_settings(payload.model_dump())
 
     @router.get("/api/settings/notifications/deliveries")

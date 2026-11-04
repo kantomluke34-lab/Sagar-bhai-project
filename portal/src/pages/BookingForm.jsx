@@ -19,6 +19,8 @@ export default function BookingForm() {
     ...initial,
     name: params.get('name') || '',
     phone: params.get('phone') || '',
+    interest: params.get('interest') || 'General enquiry',
+    purpose: params.get('purpose') || 'Meeting requested through the booking form',
   }))
   const [slots, setSlots] = useState([])
   const [loadingSlots, setLoadingSlots] = useState(false)
@@ -39,10 +41,11 @@ export default function BookingForm() {
     }
     let active = true
     setLoadingSlots(true)
+    setError('')
     setForm((value) => ({ ...value, start_time: '' }))
     publicApi.get('/api/public/slots', { params: { date: form.meeting_date } })
       .then(({ data }) => active && setSlots(data))
-      .catch(() => active && setSlots([]))
+      .catch(() => { if (active) { setSlots([]); setError('Could not load available times. Please try another date.') } })
       .finally(() => active && setLoadingSlots(false))
     return () => { active = false }
   }, [form.meeting_date])

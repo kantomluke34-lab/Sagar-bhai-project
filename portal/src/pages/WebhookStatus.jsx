@@ -5,7 +5,7 @@ import { PageTitle } from './Dashboard'
 
 const yes = (value) => value === true || ['configured', 'verified', 'active', 'ready'].includes(String(value || '').toLowerCase())
 
-export default function WebhookStatus() {
+export default function WebhookStatus({ embedded = false }) {
   const [status, setStatus] = useState(null)
   const [error, setError] = useState('')
   const [copied, setCopied] = useState(false)
@@ -22,7 +22,7 @@ export default function WebhookStatus() {
   const tokenReady = yes(status?.webhook_verification_configured) || yes(status?.verify_token_configured) || yes(status?.webhook_verify_token_configured)
   const signatureReady = yes(status?.signature_validation_configured) || yes(status?.app_secret_configured) || yes(status?.webhook_signature_configured)
   return <>
-    <PageTitle kicker="META EVENT DELIVERY" title="Webhook" subtitle="The production callback that verifies Meta and processes inbound WhatsApp events." action={<button className="secondary-button" onClick={load}><RefreshCw size={16} />Refresh</button>} />
+    {!embedded && <PageTitle kicker="META EVENT DELIVERY" title="Webhook" subtitle="The production callback that verifies Meta and processes inbound WhatsApp events." action={<button className="secondary-button" onClick={load}><RefreshCw size={16} />Refresh</button>} />}
     {error && <div className="alert error">{error}</div>}
     <section className="panel webhook-panel">
       <div className="settings-heading"><Webhook /><div><h2>Production callback URL</h2><p>Enter this exact HTTPS URL in Meta → WhatsApp → Configuration.</p></div></div>

@@ -79,7 +79,7 @@ describe('dashboard controls', () => {
     publicApi.post.mockResolvedValue({
       data: { meeting_id: 7, start_at: '2027-01-04T09:00:00+05:30' },
     })
-    renderRoute(<BookingForm />, '/book?name=Asha&phone=9876543210')
+    renderRoute(<BookingForm />, '/book?name=Asha&phone=9876543210&interest=PowerMill&purpose=Five-axis+demo')
 
     await user.type(screen.getByLabelText('Email address *'), 'asha@example.com')
     const bookingDate = format(addDays(new Date(), 2), 'yyyy-MM-dd')
@@ -88,7 +88,7 @@ describe('dashboard controls', () => {
     await user.click(screen.getByRole('button', { name: 'Book meeting' }))
 
     expect(publicApi.post).toHaveBeenCalledWith('/api/public/meetings', expect.objectContaining({
-      name: 'Asha', phone: '9876543210', email: 'asha@example.com', start_time: '09:00',
+      name: 'Asha', phone: '9876543210', email: 'asha@example.com', start_time: '09:00', interest: 'PowerMill', purpose: 'Five-axis demo',
     }))
     expect(await screen.findByText('Your meeting is requested.')).toBeVisible()
   })
@@ -97,11 +97,11 @@ describe('dashboard controls', () => {
     const user = userEvent.setup()
     const meeting = {
       id: 1, name: 'Asha Shah', phone: '919876543210', company: 'Acme',
-      interest: 'Fusion 360', purpose: 'CAM workflow', start_at: '2027-01-04T09:00:00+05:30',
+      interest: 'Fusion 360', purpose: 'CAM workflow', start_at: '2027-01-04T09:00:00+05:30', end_at: '2027-01-04T10:00:00+05:30',
       meeting_mode: 'Video', lead_stage: 'new', status: 'requested', history: [],
     }
     api.get.mockImplementation((url) => Promise.resolve({ data: url === '/api/meetings/1' ? meeting : [meeting] }))
-    api.patch.mockImplementation((_url, change) => Promise.resolve({ data: { ...meeting, ...change, history: [] } }))
+    api.patch.mockImplementation((_url, change) => Promise.resolve({ data: { ...meeting, ...change, history: undefined } }))
     renderRoute(<Meetings />)
 
     expect(await screen.findByText('Asha Shah')).toBeVisible()
@@ -111,12 +111,10 @@ describe('dashboard controls', () => {
     expect(await screen.findByText('REQUEST #1')).toBeVisible()
 
     await user.selectOptions(screen.getByRole('combobox', { name: 'Status' }), 'confirmed')
-    expect(api.patch).toHaveBeenCalledWith('/api/meetings/1', { status: 'confirmed' })
-
     const assigned = screen.getByLabelText('Assigned to')
     await user.type(assigned, 'Kiran')
-    fireEvent.blur(assigned)
-    expect(api.patch).toHaveBeenCalledWith('/api/meetings/1', { assigned_to: 'Kiran' })
+    await user.click(screen.getByRole('button', { name: 'Save changes' }))
+    expect(api.patch).toHaveBeenCalledWith('/api/meetings/1', expect.objectContaining({ status: 'confirmed', assigned_to: 'Kiran' }))
     await user.click(screen.getByRole('button', { name: 'Close meeting details' }))
     expect(screen.queryByText('REQUEST #1')).not.toBeInTheDocument()
   })
@@ -127,7 +125,7 @@ describe('dashboard controls', () => {
     api.get.mockImplementation((url) => Promise.resolve({ data: url === '/api/crm/contacts/2' ? { ...row, meetings: [] } : [row] }))
     renderRoute(<CRM />)
 
-    await user.type(screen.getByPlaceholderText(/Search contact/), 'Dev')
+    await user.type(screen.getByRole('textbox', { name: 'Search CRM contacts' }), 'Dev')
     expect(await screen.findByText('Dev Mehta')).toBeVisible()
     await user.click(screen.getByText('Dev Mehta'))
     expect(await screen.findByText('CRM CONTACT #2')).toBeVisible()
@@ -218,7 +216,7 @@ describe('dashboard controls', () => {
     api.get.mockResolvedValue({ data: { status: 'connected', display_phone_number: '+91 99999 99999', app_secret_configured: true, verify_token_configured: true, quality_rating: 'GREEN' } })
     renderRoute(<Waba />)
 
-    expect(await screen.findByText('WhatsApp Business is connected.')).toBeVisible()
+    expect(await screen.findByText('WhatsApp credentials are configured.')).toBeVisible()
     expect(screen.getByText('Meta webhook')).toBeVisible()
     expect(api.get).toHaveBeenCalledWith('/api/waba/status')
   })
