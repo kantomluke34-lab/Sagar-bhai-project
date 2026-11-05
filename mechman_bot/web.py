@@ -45,6 +45,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(_app: FastAPI):
         await database.create_schema()
         await repository.seed(settings.admin_username, hash_password(settings.admin_password))
+        await repository.freeze_dynamic_recipient_lists()
         scheduler.start()
         campaign_scheduler.start()
         if not waba.configured:

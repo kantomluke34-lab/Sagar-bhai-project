@@ -438,7 +438,8 @@ class CRMRepository:
         return await self.get_meeting(meeting_id)
 
     async def list_contacts(
-        self, query: str = "", page: int | None = None, page_size: int = 50
+        self, query: str = "", page: int | None = None, page_size: int = 50,
+        consent_status: str | None = None,
     ) -> list[dict[str, Any]] | dict[str, Any]:
         async with self.database.session_factory() as session:
             activity = select(
@@ -456,6 +457,11 @@ class CRMRepository:
                 .outerjoin(activity, activity.c.contact_id == Contact.id)
                 .order_by(Contact.updated_at.desc(), Contact.id.desc()))
             count_statement = select(func.count(Contact.id))
+            if consent_status:
+                statement = statement.where(ContactConsent.status == consent_status)
+                count_statement = count_statement.join(
+                    ContactConsent, ContactConsent.contact_id == Contact.id
+                ).where(ContactConsent.status == consent_status)
             if query:
                 pattern = f"%{query}%"
                 condition = or_(Contact.name.ilike(pattern), Contact.phone.ilike(pattern),
@@ -794,11 +800,60 @@ class CRMRepository:
             for row in rows:
                 item = as_dict(row)
                 item["recipient_count"] = len(await self._resolve_list_rows(session, row))
-                item["member_ids"] = list((await session.scalars(
-                    select(RecipientListMember.contact_id).where(RecipientListMember.list_id == row.id)
-                )).all()) if row.list_type == "static" else []
+                members = (await session.execute(
+                    select(Contact.id, Contact.name, Contact.phone, ContactConsent.status)
+                    .join(RecipientListMember, RecipientListMember.contact_id == Contact.id)
+                    .outerjoin(ContactConsent, ContactConsent.contact_id == Contact.id)
+                    .where(RecipientListMember.list_id == row.id)
+                    .order_by(Contact.name)
+                )).all()
+                item["member_ids"] = [contact_id for contact_id, _, _, _ in members]
+                item["unavailable_members"] = [
+                    {"id": contact_id, "name": name, "phone": phone}
+                    for contact_id, name, phone, consent_status in members
+                    if consent_status != "opted_in"
+                ]
                 results.append(item)
             return results
+
+    async def members_have_consent(
+        self, member_ids: list[int], existing_list_id: int | None = None
+    ) -> bool:
+        unique_ids = set(member_ids)
+        if not unique_ids:
+            return False
+        async with self.database.session_factory() as session:
+            eligible_ids = set((await session.scalars(
+                select(ContactConsent.contact_id).where(
+                    ContactConsent.contact_id.in_(unique_ids),
+                    ContactConsent.status == "opted_in",
+                )
+            )).all())
+            if existing_list_id:
+                eligible_ids.update((await session.scalars(
+                    select(RecipientListMember.contact_id).where(
+                        RecipientListMember.list_id == existing_list_id,
+                        RecipientListMember.contact_id.in_(unique_ids),
+                    )
+                )).all())
+            return unique_ids.issubset(eligible_ids)
+
+    async def freeze_dynamic_recipient_lists(self) -> None:
+        """Keep current eligible members when retiring old filter-based audiences."""
+        async with self.database.session_factory.begin() as session:
+            rows = (await session.scalars(
+                select(RecipientList).where(RecipientList.list_type == "dynamic").with_for_update()
+            )).all()
+            for row in rows:
+                members = await self._resolve_list_rows(session, row)
+                existing_ids = set((await session.scalars(
+                    select(RecipientListMember.contact_id).where(RecipientListMember.list_id == row.id)
+                )).all())
+                for member in members:
+                    if member["id"] not in existing_ids:
+                        session.add(RecipientListMember(list_id=row.id, contact_id=member["id"]))
+                row.list_type = "static"
+                row.filters = {}
 
     async def create_recipient_list(self, values: dict[str, Any]) -> dict[str, Any]:
         member_ids = list(values.pop("member_ids", []))
@@ -890,6 +945,33 @@ class CRMRepository:
                 if phone in seen:
                     continue
                 seen.add(phone)
+                if values["source_type"] == "list":
+                    contact = await session.get(Contact, int(source["contact_id"]))
+                    if contact is None or contact.phone != phone:
+                        raise ValueError("Audience changed. Review the contacts and schedule again.")
+                    membership = await session.scalar(
+                        select(RecipientListMember.id).where(
+                            RecipientListMember.list_id == values["list_id"],
+                            RecipientListMember.contact_id == contact.id,
+                        )
+                    )
+                    consent = await session.get(ContactConsent, contact.id)
+                    if membership is None or consent is None or consent.status != "opted_in":
+                        raise ValueError("Audience changed. Review the opted-in contacts and schedule again.")
+                    if not consent.source or not consent.captured_at:
+                        raise ValueError("An audience contact has incomplete WhatsApp permission details. Update the contact before scheduling.")
+                    session.add(
+                        CampaignRecipient(
+                            campaign_id=campaign.id,
+                            contact_id=contact.id,
+                            phone=phone,
+                            name=str(source.get("name") or contact.name),
+                            variables=json.loads(json.dumps(source.get("variables") or {}, default=str)),
+                            consent_source=consent.source,
+                            consent_captured_at=consent.captured_at,
+                        )
+                    )
+                    continue
                 matches = (await session.scalars(select(Contact).where(Contact.phone.in_(phone_aliases(phone))))).all()
                 for candidate in matches:
                     prior_consent = await session.get(ContactConsent, candidate.id)

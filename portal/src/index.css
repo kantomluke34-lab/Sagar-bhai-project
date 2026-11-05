@@ -370,10 +370,24 @@ textarea { resize: vertical; }
 .consent-editor button { justify-self: end; }
 .audience-panel { margin-top: 18px; }
 .audience-panel .panel-title p { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
-.audience-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.audience-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .audience-list article { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 13px; border: 1px solid var(--line); border-radius: 10px; }
 .audience-list article > div { min-width: 0; display: grid; gap: 3px; }
 .audience-list small { color: var(--muted); }
+.audience-actions { display: flex !important; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 6px !important; }
+.audience-actions .primary-button, .audience-actions .secondary-button { white-space: nowrap; }
+.audience-picker-heading { display: flex; align-items: end; justify-content: space-between; gap: 12px; }
+.audience-picker-heading label { flex: 1; }
+.audience-picker-heading > strong { padding-bottom: 11px; color: #805900; font-size: 12px; white-space: nowrap; }
+.audience-form-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.unavailable-members { display: grid; gap: 6px; padding: 11px 12px; border: 1px solid #e9c2b6; border-radius: 9px; background: #fff8f5; font-size: 12px; }
+.unavailable-members > p { margin: 0; color: var(--muted); }
+.unavailable-members > div { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.unavailable-members > div > span { min-width: 0; overflow-wrap: anywhere; }
+.audience-choice { display: grid; gap: 10px; }
+.audience-choice > .secondary-button { justify-self: start; }
+.audience-choice > small { color: var(--muted); }
+.recipient-summary { margin: 0; padding: 10px 12px; border-radius: 9px; color: #176b57; background: #e9f9f3; font-size: 12px; }
 .table-action { min-height: 31px !important; padding: 0 9px !important; font-size: 12px !important; }
 .table-action svg { flex: 0 0 auto; }
 
@@ -401,6 +415,7 @@ textarea { resize: vertical; }
   .pair-panel { grid-template-columns: 1fr; }
   .settings-grid { grid-template-columns: 1fr; }
   .campaign-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .audience-list { grid-template-columns: 1fr; }
   .health-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .conversation-shell { grid-template-columns: 310px minmax(0, 1fr); }
   .settings-actions.span-2 { grid-column: auto; }
@@ -431,6 +446,8 @@ textarea { resize: vertical; }
   .health-grid, .template-grid { grid-template-columns: 1fr; }
   .campaign-stats, .campaign-metrics, .detail-grid.three, .campaign-form fieldset { grid-template-columns: 1fr; }
   .source-tabs.three, .audience-list { grid-template-columns: 1fr; }
+  .audience-form-actions { flex-direction: column; }
+  .audience-actions { flex-wrap: wrap; }
   .consent-editor .detail-grid { grid-template-columns: 1fr; }
   .campaign-drawer, .campaign-detail-drawer { width: 100%; }
   .waba-hero { grid-template-columns: auto minmax(0, 1fr); }

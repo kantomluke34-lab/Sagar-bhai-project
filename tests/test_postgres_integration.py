@@ -168,9 +168,8 @@ def test_postgres_auth_booking_and_calendar_api(tmp_path) -> None:
             headers=headers,
             json={
                 "name": "Integration web leads",
-                "list_type": "dynamic",
-                "filters": {"source": "web_form"},
-                "member_ids": [],
+                "list_type": "static",
+                "member_ids": [contact["id"]],
             },
         )
         assert audience.status_code == 201, audience.text

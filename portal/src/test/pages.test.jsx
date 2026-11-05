@@ -216,7 +216,7 @@ describe('dashboard controls', () => {
     expect(api.post).toHaveBeenCalledWith('/api/conversations/8/messages', { text: 'We can help with that.', template_id: null, parameters: [] })
   })
 
-  test('campaign workspace exposes CSV, pasted-number, and CRM audience sources', async () => {
+  test('campaign workspace starts with saved audiences and offers one-time sources', async () => {
     const user = userEvent.setup()
     api.get.mockImplementation((url) => {
       if (url === '/api/templates') return Promise.resolve({ data: [{ id: 1, name: 'approved_offer', status: 'APPROVED', body: 'Hello', header_format: 'NONE' }] })
@@ -227,7 +227,7 @@ describe('dashboard controls', () => {
     await user.click(await screen.findByRole('button', { name: /New campaign/i }))
     expect(screen.getByRole('button', { name: /CSV \/ Excel/i })).toBeVisible()
     expect(screen.getByRole('button', { name: /Paste numbers/i })).toBeVisible()
-    expect(screen.getByRole('button', { name: /CRM audience/i })).toBeVisible()
+    expect(screen.getByRole('button', { name: /Saved audience/i })).toBeVisible()
   })
 
   test('WABA status renders Cloud API and webhook health', async () => {

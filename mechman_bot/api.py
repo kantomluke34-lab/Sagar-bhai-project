@@ -146,15 +146,8 @@ class TemplateDraft(BaseModel):
 class RecipientListDraft(BaseModel):
     name: str = Field(min_length=2, max_length=160)
     description: str | None = Field(default=None, max_length=1000)
-    list_type: Literal["static", "dynamic"] = "static"
-    filters: dict[str, str] = Field(default_factory=dict)
-    member_ids: list[int] = Field(default_factory=list, max_length=10_000)
-
-    @model_validator(mode="after")
-    def validate_list(self) -> RecipientListDraft:
-        if self.list_type == "dynamic" and not any(self.filters.values()):
-            raise ValueError("A dynamic segment requires at least one filter")
-        return self
+    list_type: Literal["static"] = "static"
+    member_ids: list[int] = Field(min_length=1, max_length=10_000)
 
 
 class CampaignRecipientInput(BaseModel):
@@ -176,6 +169,7 @@ class CampaignCreate(BaseModel):
     template_id: int
     source_type: Literal["csv", "paste", "list"]
     list_id: int | None = None
+    expected_recipient_count: int | None = Field(default=None, ge=1)
     recipients: list[CampaignRecipientInput] = Field(default_factory=list, max_length=10_000)
     consent_confirmed: bool = False
     consent_source: str | None = Field(default=None, max_length=120)
@@ -192,9 +186,9 @@ class CampaignCreate(BaseModel):
             raise ValueError("Choose a CRM audience")
         if self.source_type in {"csv", "paste"}:
             if not self.recipients:
-                raise ValueError("Upload at least one valid CSV/XLSX recipient")
+                raise ValueError("Add at least one valid recipient")
             if not self.consent_confirmed or not self.consent_source or not self.consent_captured_at:
-                raise ValueError("CSV recipients require consent confirmation, source, and date")
+                raise ValueError("Recipients require consent confirmation, source, and date")
         return self
 
 
@@ -424,8 +418,9 @@ def build_router(settings: Settings, repository: CRMRepository, waba: WABAClient
     async def contacts(
         _: dict[str, Any] = Depends(current_user), q: str = "",
         page: int | None = Query(default=None, ge=1), page_size: int = Query(default=50, ge=1, le=100),
+        consent_status: Literal["opted_in"] | None = None,
     ) -> Any:
-        return await repository.list_contacts(q, page, page_size)
+        return await repository.list_contacts(q, page, page_size, consent_status)
 
     @router.post("/api/crm/contacts", status_code=status.HTTP_201_CREATED)
     async def create_contact(payload: ContactInput, _: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
@@ -486,6 +481,8 @@ def build_router(settings: Settings, repository: CRMRepository, waba: WABAClient
     async def create_audience(
         payload: RecipientListDraft, _: dict[str, Any] = Depends(current_user)
     ) -> dict[str, Any]:
+        if not await repository.members_have_consent(payload.member_ids):
+            raise HTTPException(status_code=422, detail="Choose contacts who opted in to WhatsApp messages")
         try:
             return await repository.create_recipient_list(payload.model_dump())
         except Exception as exc:
@@ -499,6 +496,8 @@ def build_router(settings: Settings, repository: CRMRepository, waba: WABAClient
         payload: RecipientListDraft,
         _: dict[str, Any] = Depends(current_user),
     ) -> dict[str, Any]:
+        if not await repository.members_have_consent(payload.member_ids, list_id):
+            raise HTTPException(status_code=422, detail="Choose contacts who opted in to WhatsApp messages")
         result = await repository.update_recipient_list(list_id, payload.model_dump())
         if not result:
             raise HTTPException(status_code=404, detail="Audience not found")
@@ -788,6 +787,7 @@ def build_router(settings: Settings, repository: CRMRepository, waba: WABAClient
             rows = await repository.resolve_recipient_list(int(payload.list_id or 0))
             recipients = [
                 {
+                    "contact_id": row["id"],
                     "phone": row["phone"],
                     "name": row["name"],
                     "variables": row,
@@ -796,6 +796,14 @@ def build_router(settings: Settings, repository: CRMRepository, waba: WABAClient
                 }
                 for row in rows
             ]
+            if (
+                payload.expected_recipient_count is not None
+                and len(recipients) != payload.expected_recipient_count
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Audience changed. Review the recipient count and schedule again.",
+                )
         else:
             recipients = [
                 {
@@ -839,7 +847,8 @@ def build_router(settings: Settings, repository: CRMRepository, waba: WABAClient
             recipients,
             )
         except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+            code = 409 if str(exc).startswith("Audience changed.") else 422
+            raise HTTPException(status_code=code, detail=str(exc)) from exc
 
     @router.post("/api/campaigns/{campaign_id}/{action}")
     async def campaign_action(
