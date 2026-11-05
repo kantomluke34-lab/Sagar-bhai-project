@@ -24,6 +24,8 @@ Templates --> New template --> Write message --> Save template
           --> Submit for review --> Sync with Meta --> Approved
 ```
 
+To send an image, video, or document in a campaign, choose that **Header type** while making the template and upload one sample file for Meta to review. Later, when you schedule the campaign, upload the actual image, video, or document.
+
 Use `{{1}}`, `{{2}}` for details that change by person:
 
 ```text
@@ -33,20 +35,43 @@ Examples: Asha, Tuesday at 3 pm
 
 Enter one example per number, in order, under **Variable examples**. **Pending** means Meta is reviewing it. If **Rejected**, read the reason, **Edit**, save, and submit again. **Duplicate** makes a fresh draft from an approved or pending message. Only **Approved** messages can be used in campaigns.
 
-### 3. Choose people and schedule
+### 3. Make an audience and send a campaign
 
 ```text
-Campaigns --> New audience --> Choose opted-in contacts
-          --> Save audience
-          --> New campaign --> Approved message + recipients + time
-          --> Schedule campaign --> Open campaign to check results
+Campaigns --> New audience --> Pick people --> Save
+          --> Use in campaign --> Pick message --> Pick time --> Schedule
 ```
 
-Tick the people you want and select **Save audience** or **Save & create campaign** to continue directly. Only contacts marked **Opted in** appear. **Edit** changes an audience; **X** deletes it. A campaign already scheduled keeps its original recipients.
+#### Step 1: Make a saved audience
 
-In **New campaign**, choose recipients from a **Saved audience**, a **CSV / Excel** spreadsheet, or **Paste numbers**. For a spreadsheet, match its phone and name columns. For a spreadsheet or pasted numbers, confirm that everyone agreed to WhatsApp messages and enter where and when. Match each `{{1}}`, `{{2}}` to a contact detail or spreadsheet column.
+1. Open **Campaigns** and select **New audience**.
+2. Enter a name, such as “November customers”.
+3. Tick the people you want to include.
+4. Select **Save audience** if you will send later.
+5. Select **Save & create campaign** if you want to continue now.
 
-Choose **Once**, **Daily**, or **Weekly** and a future time in India time. **Sending pace** controls the gap between messages; **Meta managed** lets Meta choose. Select **Schedule campaign** and check the confirmation.
+Only people marked **Opted in** are available to add. If you see **Permission changed**, that person no longer has permission to receive messages. Select **Remove** to take them out of the audience. They will not receive a campaign until they opt in again.
+
+To change a saved audience, select **Edit**. To start sending to it, select **Use in campaign**. Deleting an audience does not change a campaign that is already scheduled.
+
+#### Step 2: Choose who receives the message
+
+1. In the campaign window, leave **Saved audience** selected.
+2. Choose the saved audience from the list.
+3. Check the number of people shown as ready to receive the message.
+4. Select **New audience** to make another group, or **Edit selected** to change the chosen group.
+5. If you return from editing, select **Save & return to campaign**. Your message and send time stay in place.
+
+You can also use **CSV / Excel** to upload a list, or **Paste numbers** to enter a short list. For either one, confirm that every person agreed to WhatsApp messages and enter where and when they agreed.
+
+#### Step 3: Choose the message and send time
+
+1. Enter a campaign name.
+2. Choose an approved message.
+3. For every `{{1}}`, `{{2}}` in the message, choose the matching detail, such as name or phone number.
+4. Choose **Once**, **Daily**, or **Weekly**.
+5. Choose a future date and time in India time.
+6. Select **Schedule campaign** and check the final message before confirming.
 
 ```text
 Scheduled --> Accepted --> Delivered --> Read

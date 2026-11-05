@@ -130,7 +130,8 @@ class TemplateDraft(BaseModel):
     footer: str | None = Field(default=None, max_length=60)
     buttons: list[dict[str, Any]] = Field(default_factory=list)
     variables: list[str] = Field(default_factory=list)
-    header_format: Literal["NONE", "TEXT"] = "NONE"
+    header_format: Literal["NONE", "TEXT", "IMAGE", "VIDEO", "DOCUMENT"] = "NONE"
+    header_sample_handle: str | None = Field(default=None, max_length=2048)
 
     @model_validator(mode="after")
     def examples_match_body_variables(self) -> TemplateDraft:
@@ -140,6 +141,13 @@ class TemplateDraft(BaseModel):
             raise ValueError("Body variables must be sequential: {{1}}, {{2}}, and so on")
         if len(self.variables) != len(expected):
             raise ValueError("Provide one variable example for each body variable")
+        if self.header_format == "TEXT" and not self.header:
+            raise ValueError("Enter header text or choose no header")
+        if self.header_format in {"IMAGE", "VIDEO", "DOCUMENT"}:
+            if not self.header_sample_handle:
+                raise ValueError("Upload a sample file for the media header")
+            if self.header:
+                raise ValueError("Media headers cannot include header text")
         return self
 
 
@@ -743,6 +751,45 @@ def build_router(settings: Settings, repository: CRMRepository, waba: WABAClient
                 "sha256": hashlib.sha256(content).hexdigest(),
             }
         )
+
+    @router.post("/api/templates/media-sample", status_code=status.HTTP_201_CREATED)
+    async def upload_template_media_sample(
+        upload: UploadFile = File(...), _: dict[str, Any] = Depends(current_user)
+    ) -> dict[str, str]:
+        content = await upload.read()
+        if not content:
+            raise HTTPException(status_code=422, detail="Sample file is empty")
+        mime_type = upload.content_type or "application/octet-stream"
+        allowed_types = {
+            "image/jpeg": "IMAGE",
+            "image/png": "IMAGE",
+            "video/mp4": "VIDEO",
+            "application/pdf": "DOCUMENT",
+        }
+        media_type = allowed_types.get(mime_type)
+        if media_type is None:
+            raise HTTPException(status_code=422, detail="Use a JPG, PNG, MP4, or PDF sample")
+        type_limit = {
+            "IMAGE": 5 * 1024 * 1024,
+            "VIDEO": 16 * 1024 * 1024,
+            "DOCUMENT": settings.max_media_bytes,
+        }[media_type]
+        if len(content) > type_limit:
+            raise HTTPException(
+                status_code=413,
+                detail=f"{media_type.title()} is limited to {type_limit // (1024 * 1024)} MB",
+            )
+        try:
+            handle = await waba.upload_template_header_sample(
+                content, mime_type, upload.filename or "sample"
+            )
+        except WABAError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        return {
+            "header_format": media_type,
+            "header_sample_handle": handle,
+            "original_name": Path(upload.filename or "sample").name[:255],
+        }
 
     @router.get("/api/campaigns")
     async def campaigns(_: dict[str, Any] = Depends(current_user)) -> list[dict[str, Any]]:

@@ -2,6 +2,7 @@ import hashlib
 import hmac
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 
 from mechman_bot.config import Settings
@@ -66,6 +67,56 @@ async def test_template_submission_includes_variable_examples() -> None:
     payload = client._post.await_args.args[1]
     body = next(item for item in payload["components"] if item["type"] == "BODY")
     assert body["example"] == {"body_text": [["Kunj", "10:30 AM"]]}
+
+
+@pytest.mark.asyncio
+async def test_media_template_submission_uses_review_sample_handle() -> None:
+    client = WABAClient(settings())
+    client._post = AsyncMock(return_value={"id": "template-2"})
+
+    await client.submit_template({
+        "name": "product_photo",
+        "language": "en_US",
+        "category": "MARKETING",
+        "header_format": "IMAGE",
+        "header_sample_handle": "4::sample-handle",
+        "body": "See our product range.",
+        "variables": [],
+    })
+
+    components = client._post.await_args.args[1]["components"]
+    assert components[0] == {
+        "type": "HEADER",
+        "format": "IMAGE",
+        "example": {"header_handle": ["4::sample-handle"]},
+    }
+
+
+@pytest.mark.asyncio
+async def test_media_review_sample_upload_uses_app_id_and_file_name(monkeypatch) -> None:
+    requests: list[httpx.Request] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/uploads"):
+            return httpx.Response(200, json={"id": "upload:sample-session"})
+        return httpx.Response(200, json={"h": "4::sample-handle"})
+
+    async_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        "mechman_bot.waba.httpx.AsyncClient",
+        lambda **kwargs: async_client(transport=httpx.MockTransport(respond), **kwargs),
+    )
+    client = WABAClient(settings(meta_app_id="2545072705904292"))
+
+    handle = await client.upload_template_header_sample(b"sample", "image/png", "product.png")
+
+    assert handle == "4::sample-handle"
+    assert requests[0].url.path.endswith("/2545072705904292/uploads")
+    assert requests[0].url.params["file_name"] == "product.png"
+    assert requests[0].url.params["file_length"] == "6"
+    assert requests[1].headers["file_offset"] == "0"
+    assert requests[1].content == b"sample"
 
 
 @pytest.mark.asyncio

@@ -143,12 +143,63 @@ class WABAClient:
             raise WABAError("Meta media upload did not return an id")
         return media_id
 
+    async def upload_template_header_sample(
+        self, content: bytes, mime_type: str, filename: str
+    ) -> str:
+        """Upload a sample file used only during Meta template review."""
+        if not self.settings.meta_access_token:
+            raise WABAError("META_ACCESS_TOKEN is not configured")
+        if not self.settings.meta_app_id:
+            raise WABAError("META_APP_ID is not configured")
+        async with httpx.AsyncClient(timeout=90) as client:
+            start = await client.post(
+                f"{self.base_url}/{self.settings.meta_app_id}/uploads",
+                headers={"Authorization": f"Bearer {self.settings.meta_access_token}"},
+                params={
+                    "file_length": str(len(content)),
+                    "file_type": mime_type,
+                    "file_name": Path(filename).name[:255],
+                },
+            )
+            if start.is_error:
+                raise WABAError(f"Meta template sample upload {start.status_code}: {start.text}")
+            upload_id = str(start.json().get("id", ""))
+            if not upload_id:
+                raise WABAError("Meta template sample upload did not return an upload id")
+            upload = await client.post(
+                f"{self.base_url}/{upload_id}",
+                headers={
+                    "Authorization": f"Bearer {self.settings.meta_access_token}",
+                    "file_offset": "0",
+                    "Content-Type": "application/octet-stream",
+                },
+                content=content,
+            )
+        if upload.is_error:
+            raise WABAError(f"Meta template sample upload {upload.status_code}: {upload.text}")
+        handle = str(upload.json().get("h", ""))
+        if not handle:
+            raise WABAError("Meta template sample upload did not return a file handle")
+        return handle
+
     async def submit_template(self, template: dict[str, Any]) -> dict[str, Any]:
         if not self.settings.meta_waba_id:
             raise WABAError("META_WABA_ID is not configured")
         components: list[dict[str, Any]] = []
-        if template.get("header"):
+        header_format = str(template.get("header_format") or "NONE").upper()
+        if header_format == "NONE" and template.get("header"):
+            header_format = "TEXT"
+        if header_format == "TEXT":
             components.append({"type": "HEADER", "format": "TEXT", "text": template["header"]})
+        elif header_format in {"IMAGE", "VIDEO", "DOCUMENT"}:
+            handle = str(template.get("header_sample_handle") or "")
+            if not handle:
+                raise WABAError("Media header requires a sample file before submission")
+            components.append({
+                "type": "HEADER",
+                "format": header_format,
+                "example": {"header_handle": [handle]},
+            })
         body_component: dict[str, Any] = {"type": "BODY", "text": template["body"]}
         if template.get("variables"):
             body_component["example"] = {"body_text": [template["variables"]]}

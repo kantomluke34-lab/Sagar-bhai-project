@@ -27,6 +27,7 @@ class Settings:
     meta_api_version: str
     meta_webhook_verify_token: str
     meta_app_secret: str
+    meta_app_id: str = ""
     dashboard_auth_enabled: bool = True
     notification_poll_seconds: int = 30
     campaign_poll_seconds: int = 10
@@ -60,6 +61,7 @@ class Settings:
             meta_access_token=os.environ.get(
                 "WHATSAPP_ACCESS_TOKEN", os.environ.get("META_ACCESS_TOKEN", "")
             ),
+            meta_app_id=os.environ.get("META_APP_ID") or "2545072705904292",
             meta_phone_number_id=os.environ.get("META_PHONE_NUMBER_ID", "1395187090344267"),
             meta_waba_id=os.environ.get("META_WABA_ID", "29459993996925480"),
             meta_api_version=os.environ.get("META_API_VERSION", "v26.0"),

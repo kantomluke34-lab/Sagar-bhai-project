@@ -267,6 +267,28 @@ describe('dashboard controls', () => {
     expect(screen.getByText("Meta's reason: Incorrect category")).toBeVisible()
   })
 
+  test('image template saves the uploaded review sample for Meta', async () => {
+    const user = userEvent.setup()
+    api.get.mockResolvedValue({ data: [] })
+    api.post.mockImplementation((url) => Promise.resolve({ data: url === '/api/templates/media-sample'
+      ? { header_format: 'IMAGE', header_sample_handle: '4::sample-handle', original_name: 'product.png' }
+      : { id: 9 } }))
+    renderRoute(<Templates />)
+
+    await user.click(await screen.findByRole('button', { name: /New template/i }))
+    await user.type(screen.getByLabelText('Name'), 'product_photo')
+    await user.click(screen.getByRole('combobox', { name: 'Header type' }))
+    await user.click(screen.getByRole('option', { name: 'Image header' }))
+    await user.upload(screen.getByLabelText(/Upload an image sample/i), new File(['sample'], 'product.png', { type: 'image/png' }))
+    expect(await screen.findByText('product.png')).toBeVisible()
+    await user.type(screen.getByLabelText(/Body/i), 'See our product range.')
+    await user.click(screen.getByRole('button', { name: 'Save template' }))
+
+    expect(api.post).toHaveBeenCalledWith('/api/templates', expect.objectContaining({
+      header_format: 'IMAGE', header_sample_handle: '4::sample-handle', header: null,
+    }))
+  })
+
   test('analytics renders all summary cards and recent meetings', async () => {
     api.get.mockResolvedValue({ data: {
       total_contacts: 5, total_meetings: 5, upcoming_meetings: 4, today_meetings: 1,

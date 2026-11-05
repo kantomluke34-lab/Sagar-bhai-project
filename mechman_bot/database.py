@@ -186,6 +186,7 @@ class MessageTemplate(Base, TimestampMixin):
     rejection_reason: Mapped[str | None] = mapped_column(Text)
     synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     header_format: Mapped[str] = mapped_column(String(20), default="NONE")
+    header_sample_handle: Mapped[str | None] = mapped_column(String(2048))
 
 
 class MediaAsset(Base, TimestampMixin):
@@ -320,6 +321,12 @@ class Database:
                 text(
                     "ALTER TABLE message_templates "
                     "ADD COLUMN IF NOT EXISTS header_format VARCHAR(20) NOT NULL DEFAULT 'NONE'"
+                )
+            )
+            await connection.execute(
+                text(
+                    "ALTER TABLE message_templates "
+                    "ADD COLUMN IF NOT EXISTS header_sample_handle VARCHAR(2048)"
                 )
             )
             await connection.execute(text("ALTER TABLE notification_deliveries ADD COLUMN IF NOT EXISTS error TEXT"))
