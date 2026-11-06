@@ -15,10 +15,12 @@
   --paper: #ffffff;
   --green: #169a7d;
   --red: #c74947;
+  --mobile-header-height: 64px;
 }
 
 * { box-sizing: border-box; }
-body { margin: 0; min-width: 320px; min-height: 100vh; background: #f4f6f9; line-height: 1.5; }
+html { background: #f4f6f9; }
+body { margin: 0; min-width: 320px; min-height: 100vh; overflow-x: hidden; background: #f4f6f9; line-height: 1.5; }
 button, input, select, textarea { font: inherit; }
 button, a { -webkit-tap-highlight-color: transparent; }
 a { color: inherit; text-decoration: none; }
@@ -108,7 +110,7 @@ tr.clickable:hover td { background: #fffaf0; }
 .primary-button.compact, .secondary-button.compact { min-height: 34px; }
 .primary-button.wide { width: 100%; }
 .secondary-button { color: var(--ink); border: 1px solid var(--line); background: #fff; }
-.icon-button { display: grid; place-items: center; color: var(--ink); background: transparent; }
+.icon-button { display: grid; place-items: center; min-width: 40px; min-height: 40px; color: var(--ink); background: transparent; }
 
 .drawer-backdrop { position: fixed; z-index: 50; inset: 0; display: flex; justify-content: end; background: rgba(11,19,33,.42); }
 .drawer { width: min(560px, 100%); height: 100%; padding: 28px; overflow-y: auto; background: #fff; box-shadow: -15px 0 40px rgba(15,25,43,.18); }
@@ -394,6 +396,31 @@ textarea { resize: vertical; }
 .table-action { min-height: 31px !important; padding: 0 9px !important; font-size: 12px !important; }
 .table-action svg { flex: 0 0 auto; }
 
+.pwa-prompt, .connection-banner {
+  position: fixed;
+  z-index: 150;
+  right: max(18px, env(safe-area-inset-right));
+  bottom: max(18px, env(safe-area-inset-bottom));
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  width: min(430px, calc(100vw - 36px));
+  padding: 12px 12px 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  color: var(--ink);
+  background: rgba(255,255,255,.97);
+  box-shadow: 0 14px 34px rgba(19,31,51,.18);
+}
+.pwa-prompt > div { min-width: 0; display: flex; align-items: flex-start; gap: 10px; }
+.pwa-prompt > div > svg { flex: 0 0 auto; margin-top: 2px; color: #8b6200; }
+.pwa-prompt span { min-width: 0; display: grid; gap: 2px; }
+.pwa-prompt strong { font-size: 13px; }
+.pwa-prompt small { color: var(--muted); font-size: 12px; line-height: 1.35; }
+.pwa-prompt .secondary-button, .pwa-prompt .primary-button { flex: 0 0 auto; }
+.dismiss-prompt { flex: 0 0 auto; margin-left: auto; }
+.connection-banner { right: 50%; bottom: auto; top: max(10px, env(safe-area-inset-top)); transform: translateX(50%); justify-content: center; width: max-content; max-width: calc(100vw - 32px); padding: 9px 13px; border-color: #ecd49b; border-radius: 999px; color: #795300; background: #fff7e3; box-shadow: 0 4px 18px rgba(19,31,51,.12); font-size: 12px; font-weight: 700; }
+
 @media (max-width: 1000px) {
   .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .chart-grid { grid-template-columns: 1fr; }
@@ -401,12 +428,16 @@ textarea { resize: vertical; }
 }
 
 @media (max-width: 760px) {
-  .sidebar-wrap { position: fixed; z-index: 80; inset: 0 auto 0 0; width: 254px; transform: translateX(-100%); transition: transform .2s ease; }
+  .app-main { padding-bottom: env(safe-area-inset-bottom); }
+  .sidebar-wrap { position: fixed; z-index: 80; inset: 0 auto 0 0; width: min(86vw, 320px); transform: translateX(-100%); transition: transform .2s ease; }
   .sidebar-wrap.open { transform: translateX(0); }
+  .sidebar { width: min(86vw, 320px); padding: max(24px, env(safe-area-inset-top)) 18px max(20px, env(safe-area-inset-bottom)); }
   .scrim { position: fixed; z-index: 70; inset: 0; border: 0; background: rgba(8,15,27,.55); }
-  .mobile-header { height: 62px; display: flex; align-items: center; gap: 10px; padding: 0 18px; border-bottom: 1px solid var(--line); background: #fff; }
+  .mobile-header { position: sticky; z-index: 50; top: 0; height: calc(var(--mobile-header-height) + env(safe-area-inset-top)); display: flex; align-items: center; gap: 10px; padding: env(safe-area-inset-top) 16px 0; border-bottom: 1px solid var(--line); background: rgba(255,255,255,.96); backdrop-filter: blur(14px); }
+  .mobile-header strong { min-width: 0; overflow: hidden; font-size: 15px; text-overflow: ellipsis; white-space: nowrap; }
   .mobile-header .icon-button { margin-left: auto; }
-  .page { padding: 28px 18px 54px; }
+  .menu-button { width: 44px; min-width: 44px; height: 44px; min-height: 44px; border: 1px solid var(--line); border-radius: 11px; }
+  .page { padding: 22px 16px calc(32px + env(safe-area-inset-bottom)); }
   .page-title { align-items: start; flex-direction: column; }
   .stats-grid { grid-template-columns: 1fr 1fr; }
   .filter-row { flex-direction: column; }
@@ -421,6 +452,10 @@ textarea { resize: vertical; }
   .audience-list { grid-template-columns: 1fr; }
   .health-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .conversation-shell { grid-template-columns: 310px minmax(0, 1fr); }
+  .primary-button, .secondary-button { min-height: 44px; padding: 0 15px; }
+  .primary-button.compact, .secondary-button.compact { min-height: 40px; }
+  input, select, textarea, .custom-select { min-height: 44px; }
+  .search, .select-filter { min-height: 44px; height: 44px; }
   .settings-actions.span-2 { grid-column: auto; }
   .password-form { grid-template-columns: 1fr; }
   .qr-frame { max-width: 360px; width: 100%; margin: auto; }
@@ -439,7 +474,7 @@ textarea { resize: vertical; }
   .page-actions > button { flex: 1; }
   .conversation-shell { min-height: 620px; display: block; }
   .conversation-list, .conversation-detail { min-height: 620px; }
-  .conversation-detail { position: fixed; z-index: 60; inset: 62px 0 0; border: 0; border-radius: 0; }
+  .conversation-detail { position: fixed; z-index: 60; inset: calc(var(--mobile-header-height) + env(safe-area-inset-top)) 0 0; border: 0; border-radius: 0; }
   .conversation-detail:has(.conversation-placeholder) { display: none; }
   .mobile-detail-close { display: grid; }
   .conversation-head { align-items: flex-start; }
@@ -458,6 +493,8 @@ textarea { resize: vertical; }
   .copy-field { grid-template-columns: 1fr; }
   .webhook-flow { grid-template-columns: 1fr; }
   .webhook-flow > svg { margin: auto; transform: none; }
+  .pwa-prompt { align-items: flex-start; gap: 10px; width: calc(100vw - 24px); right: 12px; bottom: max(12px, env(safe-area-inset-bottom)); }
+  .pwa-prompt .primary-button, .pwa-prompt .secondary-button { min-height: 38px; padding: 0 11px; }
 }
 
 .crm-table td { padding: 9px 14px; }

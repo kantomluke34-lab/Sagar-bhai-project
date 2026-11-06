@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title">
+  <title>Mechman CRM</title>
+  <rect width="512" height="512" rx="112" fill="#101a2f"/>
+  <rect x="72" y="72" width="368" height="368" rx="88" fill="#ffb000"/>
+  <path fill="#101a2f" d="M128 348V164h56l72 112 72-112h56v184h-52V250l-57 88h-38l-57-88v98z"/>
+</svg>
