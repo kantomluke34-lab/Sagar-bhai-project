@@ -228,6 +228,9 @@ describe('dashboard controls', () => {
     expect(screen.getByRole('button', { name: /CSV \/ Excel/i })).toBeVisible()
     expect(screen.getByRole('button', { name: /Paste numbers/i })).toBeVisible()
     expect(screen.getByRole('button', { name: /Saved audience/i })).toBeVisible()
+    const setupFlow = screen.getByRole('link', { name: /Setup DM Flow/i })
+    expect(setupFlow).toHaveAttribute('href', '/dm-flows')
+    expect(setupFlow).toHaveAttribute('target', '_blank')
   })
 
   test('WABA status renders Cloud API and webhook health', async () => {

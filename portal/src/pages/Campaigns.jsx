@@ -1,4 +1,4 @@
-import { CalendarClock, Copy, Download, FileSpreadsheet, ListFilter, Loader2, Pause, Play, Plus, RotateCcw, Send, Upload, X, XCircle } from 'lucide-react'
+import { CalendarClock, Copy, Download, FileSpreadsheet, GitBranch, ListFilter, Loader2, Pause, Play, Plus, RotateCcw, Send, Upload, X, XCircle } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import api from '../api'
 import useDebouncedValue from '../hooks/useDebouncedValue'
@@ -76,6 +76,15 @@ export default function Campaigns() {
     finally { setLoading(false) }
   }
   useEffect(() => { load() }, [])
+  useEffect(() => {
+    const refreshPublishedFlows = () => {
+      api.get('/api/dm-flows', { params: { published_only: true } })
+        .then(({ data }) => setDmFlows(data || []))
+        .catch(() => {})
+    }
+    window.addEventListener('focus', refreshPublishedFlows)
+    return () => window.removeEventListener('focus', refreshPublishedFlows)
+  }, [])
   useEffect(() => {
     if (!audienceDraft) return
     let active = true
@@ -267,7 +276,7 @@ export default function Campaigns() {
       <div className="detail-grid"><label>Campaign name<input required value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder="November service reminder" /></label><label>Approved template<select required value={draft.template_id} onChange={(event) => { const count = variableCount(templates.find((item) => item.id === Number(event.target.value))); setDraft({ ...draft, template_id: event.target.value, asset_id: null, asset_name: '' }); setMapping(Array(count).fill('')) }}><option value="">Choose template</option>{templates.map((item) => <option key={item.id} value={item.id}>{item.name} · {headerFormat(item)}</option>)}</select></label></div>
       {!templates.length && <p className="source-help">No approved messages yet. Create one on the <a href="/templates">Templates page</a> and wait for Meta approval.</p>}
       {selectedTemplate && <div className="template-preview"><strong>{selectedTemplate.header || selectedTemplate.name}</strong><p>{selectedTemplate.body}</p><small>{selectedTemplate.language} · {headerFormat(selectedTemplate)} header · {requiredVariables} variables</small></div>}
-      <label>DM flow after reply <select value={draft.dm_flow_version_id} onChange={(event) => setDraft({ ...draft, dm_flow_version_id: event.target.value })}><option value="">Use the general CAM assistant</option>{dmFlows.map((flow) => <option key={flow.published_version.id} value={flow.published_version.id}>{flow.name} · version {flow.published_version.version}</option>)}</select><small>When selected, replies to this campaign enter the published flow before the general assistant.</small></label>
+      <div className="campaign-flow-setting"><label>DM flow after reply <select value={draft.dm_flow_version_id} onChange={(event) => setDraft({ ...draft, dm_flow_version_id: event.target.value })}><option value="">Use the general CAM assistant</option>{dmFlows.map((flow) => <option key={flow.published_version.id} value={flow.published_version.id}>{flow.name} · version {flow.published_version.version}</option>)}</select></label><div className="campaign-flow-actions"><small>Published flows appear here. Replies enter the selected flow before the general assistant.</small><a className="secondary-button compact" href="/dm-flows" target="_blank" rel="noreferrer" aria-label="Setup DM Flow (opens in a new tab)"><GitBranch size={15} />Setup DM Flow</a></div></div>
       <div className="source-tabs three" aria-label="Choose recipients"><button type="button" aria-pressed={draft.source_type === 'list'} className={draft.source_type === 'list' ? 'active' : ''} onClick={() => chooseSource('list')}><ListFilter />Saved audience</button><button type="button" aria-pressed={draft.source_type === 'csv'} className={draft.source_type === 'csv' ? 'active' : ''} onClick={() => chooseSource('csv')}><FileSpreadsheet />CSV / Excel</button><button type="button" aria-pressed={draft.source_type === 'paste'} className={draft.source_type === 'paste' ? 'active' : ''} onClick={() => chooseSource('paste')}><Plus />Paste numbers</button></div>
       <p className="source-help">{draft.source_type === 'list' ? 'Choose a saved group of contacts who agreed to WhatsApp messages.' : draft.source_type === 'csv' ? 'Upload a spreadsheet of recipients.' : 'Enter a short list of phone numbers.'}</p>
       {draft.source_type === 'csv' ? <>

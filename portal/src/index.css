@@ -303,6 +303,9 @@ textarea { resize: vertical; }
 .campaign-drawer, .campaign-detail-drawer { width: min(760px, 100%); }
 .campaign-form { display: grid; gap: 17px; margin-top: 24px; }
 .campaign-form label { display: grid; gap: 7px; }
+.campaign-flow-setting { display: grid; gap: 8px; }
+.campaign-flow-actions { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.campaign-flow-actions small { color: var(--muted); line-height: 1.45; }
 .campaign-form fieldset { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding: 16px; border: 1px solid var(--line); border-radius: 12px; }
 .campaign-form legend { padding: 0 7px; font-size: 12px; font-weight: 800; }
 .fieldset-help { grid-column: 1 / -1; margin: -2px 0 1px; color: var(--muted); font-size: 11px; line-height: 1.45; }
@@ -485,6 +488,7 @@ textarea { resize: vertical; }
   .campaign-stats, .campaign-metrics, .detail-grid.three, .campaign-form fieldset { grid-template-columns: 1fr; }
   .source-tabs.three, .audience-list { grid-template-columns: 1fr; }
   .audience-form-actions { flex-direction: column; }
+  .campaign-flow-actions { align-items: stretch; flex-direction: column; }
   .audience-actions { flex-wrap: wrap; }
   .consent-editor .detail-grid { grid-template-columns: 1fr; }
   .campaign-drawer, .campaign-detail-drawer { width: 100%; }
