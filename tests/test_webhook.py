@@ -42,6 +42,15 @@ class FakeWABA:
         return f"wamid.{len(self.sent)}"
 
 
+class ClaimingFlowEngine:
+    def __init__(self) -> None:
+        self.inbound = None
+
+    async def handle_inbound(self, **values):
+        self.inbound = values
+        return True
+
+
 def payload(message_id="wamid.in.1"):
     return {
         "entry": [
@@ -84,6 +93,36 @@ async def test_takeover_logs_inbound_without_bot_reply() -> None:
     waba = FakeWABA()
     processor = WebhookProcessor(FakeSettings(), repository, waba)
     await processor.process(payload())
+    assert not waba.sent
+    assert repository.state is None
+
+
+@pytest.mark.asyncio
+async def test_campaign_flow_claims_reply_before_general_bot() -> None:
+    repository = FakeRepository()
+    waba = FakeWABA()
+    flow = ClaimingFlowEngine()
+    processor = WebhookProcessor(FakeSettings(), repository, waba, flow)
+    event = payload("wamid.in.flow")
+    message = event["entry"][0]["changes"][0]["value"]["messages"][0]
+    message.update(
+        {
+            "type": "interactive",
+            "interactive": {"button_reply": {"id": "dmf:yes", "title": "Yes"}},
+            "context": {"id": "wamid.campaign"},
+        }
+    )
+
+    await processor.process(event)
+
+    assert flow.inbound == {
+        "phone": "919999999999",
+        "conversation_id": 1,
+        "message_id": "wamid.in.flow",
+        "text": "Yes",
+        "payload": "dmf:yes",
+        "context_message_id": "wamid.campaign",
+    }
     assert not waba.sent
     assert repository.state is None
 

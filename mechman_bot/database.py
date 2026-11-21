@@ -200,6 +200,34 @@ class MediaAsset(Base, TimestampMixin):
     meta_media_id: Mapped[str | None] = mapped_column(String(200))
 
 
+class DMFlow(Base, TimestampMixin):
+    __tablename__ = "dm_flows"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(160), index=True)
+    description: Mapped[str] = mapped_column(Text, default="")
+    draft_graph: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    draft_version: Mapped[int] = mapped_column(Integer, default=1)
+    status: Mapped[str] = mapped_column(String(30), default="draft", index=True)
+    archived: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    created_by: Mapped[str] = mapped_column(String(100), default="admin")
+
+
+class DMFlowVersion(Base):
+    __tablename__ = "dm_flow_versions"
+    __table_args__ = (UniqueConstraint("flow_id", "version"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    flow_id: Mapped[int] = mapped_column(
+        ForeignKey("dm_flows.id", ondelete="CASCADE"), index=True
+    )
+    version: Mapped[int] = mapped_column(Integer)
+    graph: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    checksum: Mapped[str] = mapped_column(String(64), index=True)
+    published_by: Mapped[str] = mapped_column(String(100))
+    published_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+
+
 class Campaign(Base, TimestampMixin):
     __tablename__ = "campaigns"
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -209,6 +237,9 @@ class Campaign(Base, TimestampMixin):
         ForeignKey("recipient_lists.id", ondelete="SET NULL"), index=True
     )
     asset_id: Mapped[int | None] = mapped_column(ForeignKey("media_assets.id"), index=True)
+    dm_flow_version_id: Mapped[int | None] = mapped_column(
+        ForeignKey("dm_flow_versions.id", ondelete="RESTRICT"), index=True
+    )
     source_type: Mapped[str] = mapped_column(String(20), default="csv")
     schedule_type: Mapped[str] = mapped_column(String(20), default="once")
     scheduled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
@@ -221,6 +252,7 @@ class Campaign(Base, TimestampMixin):
     failed_count: Mapped[int] = mapped_column(Integer, default=0)
     delivered_count: Mapped[int] = mapped_column(Integer, default=0)
     read_count: Mapped[int] = mapped_column(Integer, default=0)
+    uncertain_count: Mapped[int] = mapped_column(Integer, default=0)
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_by: Mapped[str] = mapped_column(String(100), default="admin")
@@ -239,7 +271,24 @@ class CampaignRecipient(Base):
     variables: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     consent_source: Mapped[str] = mapped_column(String(120))
     consent_captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    consent_evidence: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class CampaignEvent(Base):
+    __tablename__ = "campaign_events"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    campaign_id: Mapped[int] = mapped_column(
+        ForeignKey("campaigns.id", ondelete="CASCADE"), index=True
+    )
+    action: Mapped[str] = mapped_column(String(40), index=True)
+    actor: Mapped[str] = mapped_column(String(100))
+    old_status: Mapped[str | None] = mapped_column(String(30))
+    new_status: Mapped[str | None] = mapped_column(String(30))
+    details: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
 
 
 class CampaignRun(Base):
@@ -278,6 +327,48 @@ class CampaignDelivery(Base):
     read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class DMFlowExecution(Base, TimestampMixin):
+    __tablename__ = "dm_flow_executions"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    flow_version_id: Mapped[int] = mapped_column(
+        ForeignKey("dm_flow_versions.id", ondelete="RESTRICT"), index=True
+    )
+    campaign_id: Mapped[int] = mapped_column(
+        ForeignKey("campaigns.id", ondelete="CASCADE"), index=True
+    )
+    campaign_delivery_id: Mapped[int] = mapped_column(
+        ForeignKey("campaign_deliveries.id", ondelete="CASCADE"), unique=True, index=True
+    )
+    conversation_id: Mapped[int | None] = mapped_column(
+        ForeignKey("conversations.id", ondelete="SET NULL"), index=True
+    )
+    phone: Mapped[str] = mapped_column(String(32), index=True)
+    root_wa_message_id: Mapped[str] = mapped_column(String(200), unique=True, index=True)
+    current_node_id: Mapped[str] = mapped_column(String(80))
+    status: Mapped[str] = mapped_column(String(30), default="running", index=True)
+    variables: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    wake_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    last_inbound_message_id: Mapped[str | None] = mapped_column(
+        String(200), unique=True, index=True
+    )
+    error: Mapped[str | None] = mapped_column(Text)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class DMFlowExecutionEvent(Base):
+    __tablename__ = "dm_flow_execution_events"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    execution_id: Mapped[int] = mapped_column(
+        ForeignKey("dm_flow_executions.id", ondelete="CASCADE"), index=True
+    )
+    event_type: Mapped[str] = mapped_column(String(50), index=True)
+    node_id: Mapped[str | None] = mapped_column(String(80))
+    details: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
     )
 
 
@@ -331,6 +422,25 @@ class Database:
             )
             await connection.execute(text("ALTER TABLE notification_deliveries ADD COLUMN IF NOT EXISTS error TEXT"))
             await connection.execute(text("ALTER TABLE contacts ADD COLUMN IF NOT EXISTS lead_status VARCHAR(20) NOT NULL DEFAULT 'open'"))
+            await connection.execute(text("ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS uncertain_count INTEGER NOT NULL DEFAULT 0"))
+            await connection.execute(
+                text(
+                    "ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS dm_flow_version_id "
+                    "INTEGER REFERENCES dm_flow_versions(id) ON DELETE RESTRICT"
+                )
+            )
+            await connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_campaigns_dm_flow_version_id "
+                    "ON campaigns (dm_flow_version_id)"
+                )
+            )
+            await connection.execute(
+                text(
+                    "ALTER TABLE campaign_recipients "
+                    "ADD COLUMN IF NOT EXISTS consent_evidence JSONB NOT NULL DEFAULT '{}'::jsonb"
+                )
+            )
 
     async def dispose(self) -> None:
         await self.engine.dispose()

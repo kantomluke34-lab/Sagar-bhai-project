@@ -1,4 +1,4 @@
-import { BarChart3, CalendarDays, ContactRound, FileText, LogOut, Megaphone, MessagesSquare, Settings } from 'lucide-react'
+import { BarChart3, Bot, CalendarDays, ContactRound, FileText, LogOut, Megaphone, MessagesSquare, Settings } from 'lucide-react'
 import { NavLink } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 
@@ -6,6 +6,7 @@ const links = [
   ['/', 'Dashboard', BarChart3],
   ['/conversations', 'Conversations', MessagesSquare],
   ['/campaigns', 'Campaigns', Megaphone],
+  ['/dm-flows', 'DM Flows', Bot],
   ['/meetings', 'Meetings', CalendarDays],
   ['/crm', 'CRM Contacts', ContactRound],
   ['/templates', 'Templates', FileText],

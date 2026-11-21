@@ -8,6 +8,7 @@ const Campaigns = lazy(() => import('./pages/Campaigns'))
 const Conversations = lazy(() => import('./pages/Conversations'))
 const CRM = lazy(() => import('./pages/CRM'))
 const Dashboard = lazy(() => import('./pages/Dashboard'))
+const DmFlows = lazy(() => import('./pages/DmFlows'))
 const Login = lazy(() => import('./pages/Login'))
 const Meetings = lazy(() => import('./pages/Meetings'))
 const Settings = lazy(() => import('./pages/Settings'))
@@ -35,6 +36,7 @@ export default function App() {
                 <Route index element={<Dashboard />} />
                 <Route path="/conversations" element={<Conversations />} />
                 <Route path="/campaigns" element={<Campaigns />} />
+                <Route path="/dm-flows" element={<DmFlows />} />
                 <Route path="/meetings" element={<Meetings />} />
                 <Route path="/crm" element={<CRM />} />
                 <Route path="/waba" element={<Waba />} />

@@ -215,6 +215,7 @@ def test_postgres_auth_booking_and_calendar_api(tmp_path) -> None:
             "name": "Opt out protection", "template_id": template["id"], "source_type": "paste",
             "recipients": [{"phone": contact["phone"], "variables": {"name": "Contact"}}],
             "consent_confirmed": True, "consent_source": "test", "consent_captured_at": datetime.now(UTC).isoformat(),
+            "consent_evidence": "integration test evidence",
             "scheduled_at": (datetime.now(UTC) + timedelta(minutes=5)).isoformat(), "parameter_mapping": ["name"],
         })
         assert refused.status_code == 422, refused.text
@@ -237,6 +238,7 @@ def test_postgres_auth_booking_and_calendar_api(tmp_path) -> None:
                 "consent_confirmed": True,
                 "consent_source": "integration opt-in",
                 "consent_captured_at": datetime.now(UTC).isoformat(),
+                "consent_evidence": "integration test evidence",
                 "schedule_type": "once",
                 "scheduled_at": (datetime.now(UTC) + timedelta(seconds=1)).isoformat(),
                 "parameter_mapping": ["name"],

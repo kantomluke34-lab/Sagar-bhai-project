@@ -20,6 +20,7 @@ from .auth import hash_password
 from .campaigns import CampaignScheduler
 from .config import Settings
 from .database import Database
+from .dm_flow_engine import DMFlowEngine, DMFlowScheduler
 from .logging_config import configure_logging
 from .notifications import NotificationScheduler
 from .repository import CRMRepository
@@ -35,10 +36,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     database = Database(settings)
     repository = CRMRepository(database)
     waba = WABAClient(settings)
-    processor = WebhookProcessor(settings, repository, waba)
+    dm_flow_engine = DMFlowEngine(repository, waba)
+    dm_flow_scheduler = DMFlowScheduler(repository, dm_flow_engine)
+    processor = WebhookProcessor(settings, repository, waba, dm_flow_engine)
     scheduler = NotificationScheduler(repository, waba, settings.notification_poll_seconds)
     campaign_scheduler = CampaignScheduler(
-        repository, waba, settings.media_root, settings.campaign_poll_seconds
+        repository,
+        waba,
+        settings.media_root,
+        settings.campaign_poll_seconds,
+        dm_flow_engine=dm_flow_engine,
     )
 
     @asynccontextmanager
@@ -47,6 +54,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await repository.seed(settings.admin_username, hash_password(settings.admin_password))
         await repository.freeze_dynamic_recipient_lists()
         scheduler.start()
+        dm_flow_scheduler.start()
         campaign_scheduler.start()
         if not waba.configured:
             LOGGER.warning("WABA is not fully configured; outbound messaging is disabled")
@@ -54,6 +62,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             yield
         finally:
             await campaign_scheduler.stop()
+            await dm_flow_scheduler.stop()
             await scheduler.stop()
             await database.dispose()
 
@@ -93,6 +102,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             extra={**event, "duration_ms": duration_ms, "status": response.status_code},
         )
         response.headers["X-Request-ID"] = request_id
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "same-origin")
+        response.headers.setdefault(
+            "Permissions-Policy", "camera=(), microphone=(), geolocation=()"
+        )
+        if request.url.path.startswith("/api/auth/"):
+            response.headers["Cache-Control"] = "no-store"
+            response.headers["Pragma"] = "no-cache"
+        if request.url.scheme == "https":
+            response.headers.setdefault(
+                "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
+            )
         return response
 
     app.include_router(build_router(settings, repository, waba))
@@ -101,6 +123,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.database = database
     app.state.repository = repository
     app.state.waba = waba
+    app.state.dm_flow_engine = dm_flow_engine
 
     @app.get("/readyz", include_in_schema=False)
     async def readiness() -> JSONResponse:

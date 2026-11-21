@@ -16,12 +16,17 @@ from .database import (
     AppSetting,
     Campaign,
     CampaignDelivery,
+    CampaignEvent,
     CampaignRecipient,
     CampaignRun,
     Contact,
     ContactConsent,
     Conversation,
     Database,
+    DMFlow,
+    DMFlowExecution,
+    DMFlowExecutionEvent,
+    DMFlowVersion,
     MediaAsset,
     Meeting,
     MeetingHistory,
@@ -33,6 +38,7 @@ from .database import (
     User,
     as_dict,
 )
+from .dm_flows import FlowGraph, graph_checksum, graph_indexes
 
 DEFAULT_NOTIFICATION_SETTINGS = {
     "reminder_enabled": True,
@@ -773,6 +779,165 @@ class CRMRepository:
                 row.meta_media_id = media_id
                 await session.commit()
 
+    # -- DM flows -------------------------------------------------------
+
+    async def list_dm_flows(self, published_only: bool = False) -> list[dict[str, Any]]:
+        async with self.database.session_factory() as session:
+            statement = select(DMFlow).where(DMFlow.archived.is_(False)).order_by(
+                DMFlow.updated_at.desc()
+            )
+            if published_only:
+                statement = statement.where(DMFlow.status == "published")
+            rows = (await session.scalars(statement)).all()
+            results: list[dict[str, Any]] = []
+            for row in rows:
+                item = as_dict(row)
+                version = await session.scalar(
+                    select(DMFlowVersion)
+                    .where(DMFlowVersion.flow_id == row.id)
+                    .order_by(DMFlowVersion.version.desc())
+                    .limit(1)
+                )
+                item["published_version"] = as_dict(version) if version else None
+                results.append(item)
+            return results
+
+    async def get_dm_flow(self, flow_id: int) -> dict[str, Any] | None:
+        async with self.database.session_factory() as session:
+            row = await session.get(DMFlow, flow_id)
+            if not row:
+                return None
+            item = as_dict(row)
+            versions = (
+                await session.scalars(
+                    select(DMFlowVersion)
+                    .where(DMFlowVersion.flow_id == flow_id)
+                    .order_by(DMFlowVersion.version.desc())
+                )
+            ).all()
+            item["versions"] = [as_dict(version) for version in versions]
+            item["published_version"] = item["versions"][0] if item["versions"] else None
+            return item
+
+    async def get_dm_flow_version(self, version_id: int) -> dict[str, Any] | None:
+        async with self.database.session_factory() as session:
+            version = await session.get(DMFlowVersion, version_id)
+            if not version:
+                return None
+            flow = await session.get(DMFlow, version.flow_id)
+            if not flow:
+                return None
+            return {**as_dict(version), "flow_name": flow.name, "flow_archived": flow.archived}
+
+    async def create_dm_flow(
+        self, name: str, description: str, graph: dict[str, Any], created_by: str
+    ) -> dict[str, Any]:
+        validated = FlowGraph.model_validate(graph).model_dump(mode="json")
+        async with self.database.session_factory() as session:
+            row = DMFlow(
+                name=name.strip(),
+                description=description.strip(),
+                draft_graph=validated,
+                created_by=created_by,
+            )
+            session.add(row)
+            await session.commit()
+            await session.refresh(row)
+            return {**as_dict(row), "versions": [], "published_version": None}
+
+    async def update_dm_flow(
+        self,
+        flow_id: int,
+        expected_version: int,
+        name: str,
+        description: str,
+        graph: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        validated = FlowGraph.model_validate(graph).model_dump(mode="json")
+        async with self.database.session_factory() as session:
+            row = await session.get(DMFlow, flow_id, with_for_update=True)
+            if not row:
+                return None
+            if row.archived:
+                raise ValueError("Archived flows cannot be edited")
+            if row.draft_version != expected_version:
+                raise ValueError("Flow changed in another session. Reload before saving.")
+            row.name = name.strip()
+            row.description = description.strip()
+            row.draft_graph = validated
+            row.draft_version += 1
+            await session.commit()
+            await session.refresh(row)
+            return as_dict(row)
+
+    async def publish_dm_flow(
+        self, flow_id: int, expected_version: int, published_by: str
+    ) -> dict[str, Any] | None:
+        async with self.database.session_factory() as session:
+            flow = await session.get(DMFlow, flow_id, with_for_update=True)
+            if not flow:
+                return None
+            if flow.archived:
+                raise ValueError("Archived flows cannot be published")
+            if flow.draft_version != expected_version:
+                raise ValueError("Flow changed in another session. Reload before publishing.")
+            graph = FlowGraph.model_validate(flow.draft_graph).model_dump(mode="json")
+            checksum = graph_checksum(graph)
+            latest = await session.scalar(
+                select(DMFlowVersion)
+                .where(DMFlowVersion.flow_id == flow_id)
+                .order_by(DMFlowVersion.version.desc())
+                .limit(1)
+            )
+            if latest and latest.checksum == checksum:
+                flow.status = "published"
+                await session.commit()
+                return as_dict(latest)
+            version = DMFlowVersion(
+                flow_id=flow.id,
+                version=(latest.version + 1) if latest else 1,
+                graph=graph,
+                checksum=checksum,
+                published_by=published_by,
+            )
+            session.add(version)
+            flow.status = "published"
+            await session.commit()
+            await session.refresh(version)
+            return as_dict(version)
+
+    async def duplicate_dm_flow(self, flow_id: int, created_by: str) -> dict[str, Any] | None:
+        async with self.database.session_factory() as session:
+            source = await session.get(DMFlow, flow_id)
+            if not source:
+                return None
+            row = DMFlow(
+                name=f"{source.name} copy",
+                description=source.description,
+                draft_graph=json.loads(json.dumps(source.draft_graph)),
+                created_by=created_by,
+            )
+            session.add(row)
+            await session.commit()
+            await session.refresh(row)
+            return as_dict(row)
+
+    async def archive_dm_flow(
+        self, flow_id: int, expected_version: int
+    ) -> dict[str, Any] | None:
+        async with self.database.session_factory() as session:
+            row = await session.get(DMFlow, flow_id, with_for_update=True)
+            if not row:
+                return None
+            if row.draft_version != expected_version:
+                raise ValueError("Flow changed in another session. Reload before archiving.")
+            row.archived = True
+            row.status = "archived"
+            row.draft_version += 1
+            await session.commit()
+            await session.refresh(row)
+            return as_dict(row)
+
     async def set_contact_consent(
         self,
         contact_id: int,
@@ -928,6 +1093,7 @@ class CRMRepository:
                 **as_dict(contact),
                 "consent_source": consent.source,
                 "consent_captured_at": consent.captured_at,
+                "consent_evidence": consent.evidence,
             }
             for contact, consent in records
         ]
@@ -969,6 +1135,7 @@ class CRMRepository:
                             variables=json.loads(json.dumps(source.get("variables") or {}, default=str)),
                             consent_source=consent.source,
                             consent_captured_at=consent.captured_at,
+                            consent_evidence=dict(source.get("consent_evidence") or consent.evidence or {}),
                         )
                     )
                     continue
@@ -1009,6 +1176,7 @@ class CRMRepository:
                         variables=json.loads(json.dumps(source.get("variables") or {}, default=str)),
                         consent_source=str(source["consent_source"]),
                         consent_captured_at=source["consent_captured_at"],
+                        consent_evidence=dict(source.get("consent_evidence") or {}),
                     )
                 )
             campaign.total_recipients = len(seen)
@@ -1038,6 +1206,29 @@ class CRMRepository:
             result = as_dict(campaign)
             template = await session.get(MessageTemplate, campaign.template_id)
             result["template"] = as_dict(template) if template else None
+            if campaign.dm_flow_version_id:
+                version = await session.get(DMFlowVersion, campaign.dm_flow_version_id)
+                flow = await session.get(DMFlow, version.flow_id) if version else None
+                result["dm_flow"] = (
+                    {
+                        "id": flow.id,
+                        "name": flow.name,
+                        "version_id": version.id,
+                        "version": version.version,
+                    }
+                    if flow and version
+                    else None
+                )
+            else:
+                result["dm_flow"] = None
+            events = (
+                await session.scalars(
+                    select(CampaignEvent)
+                    .where(CampaignEvent.campaign_id == campaign_id)
+                    .order_by(CampaignEvent.id.desc())
+                )
+            ).all()
+            result["events"] = [as_dict(event) for event in events]
             recipients = (
                 await session.scalars(
                     select(CampaignRecipient)
@@ -1072,7 +1263,7 @@ class CRMRepository:
             return result
 
     async def set_campaign_status(
-        self, campaign_id: int, action: str
+        self, campaign_id: int, action: str, actor: str
     ) -> dict[str, Any] | None:
         transitions = {
             "pause": ({"scheduled", "running"}, "paused"),
@@ -1086,9 +1277,19 @@ class CRMRepository:
                 return None
             if row.status not in allowed:
                 raise ValueError(f"Campaign cannot {action} from {row.status}")
+            old_status = row.status
             row.status = target
             if action == "resume" and row.scheduled_at < datetime.now(UTC):
                 row.scheduled_at = datetime.now(UTC)
+            session.add(
+                CampaignEvent(
+                    campaign_id=row.id,
+                    action=action,
+                    actor=actor,
+                    old_status=old_status,
+                    new_status=target,
+                )
+            )
             await session.commit()
             await session.refresh(row)
             return as_dict(row)
@@ -1122,6 +1323,7 @@ class CRMRepository:
                 name=f"{original.name} — retry",
                 template_id=original.template_id,
                 asset_id=original.asset_id,
+                dm_flow_version_id=original.dm_flow_version_id,
                 source_type="retry",
                 schedule_type="once",
                 scheduled_at=datetime.now(UTC),
@@ -1144,6 +1346,7 @@ class CRMRepository:
                         variables=source.variables,
                         consent_source=source.consent_source,
                         consent_captured_at=source.consent_captured_at,
+                        consent_evidence=source.consent_evidence,
                     )
                 )
             await session.commit()
@@ -1217,7 +1420,7 @@ class CRMRepository:
                     run.finished_at = datetime.now(UTC)
                     await session.execute(update(CampaignDelivery).where(
                         CampaignDelivery.run_id == run.id, CampaignDelivery.status == "pending",
-                    ).values(status="failed", error="Interrupted; verify delivery before retrying."))
+                    ).values(status="uncertain", error="Interrupted after work began; verify delivery with Meta before retrying."))
                 await session.flush()
                 await self._refresh_campaign_counts(session, campaign.id)
             await session.commit()
@@ -1281,6 +1484,10 @@ class CRMRepository:
             row = await session.get(CampaignDelivery, delivery_id)
             if not row:
                 return
+            # A successful acceptance commit may have completed even if its caller
+            # lost the database response. Never downgrade that durable result.
+            if status == "uncertain" and row.status != "pending":
+                return
             row.status = status
             row.wa_message_id = wa_message_id
             row.rendered_parameters = parameters or []
@@ -1313,6 +1520,7 @@ class CRMRepository:
             counts.get(value, 0) for value in ("accepted", "sent", "delivered", "read")
         )
         campaign.failed_count = counts.get("failed", 0)
+        campaign.uncertain_count = counts.get("uncertain", 0)
         campaign.delivered_count = counts.get("delivered", 0) + counts.get("read", 0)
         campaign.read_count = counts.get("read", 0)
 
@@ -1351,7 +1559,14 @@ class CRMRepository:
                 campaign.status = "scheduled"
             await session.commit()
 
-    async def fail_campaign_run(self, campaign_id: int, run_id: int, error: str) -> None:
+    async def fail_campaign_run(
+        self,
+        campaign_id: int,
+        run_id: int,
+        error: str,
+        *,
+        pending_status: str = "failed",
+    ) -> None:
         async with self.database.session_factory() as session:
             campaign = await session.get(Campaign, campaign_id)
             run = await session.get(CampaignRun, run_id)
@@ -1363,7 +1578,7 @@ class CRMRepository:
                 await session.execute(
                     update(CampaignDelivery)
                     .where(CampaignDelivery.run_id == run_id, CampaignDelivery.status == "pending")
-                    .values(status="failed", error=error)
+                    .values(status=pending_status, error=error)
                 )
             await session.flush()
             await self._refresh_campaign_counts(session, campaign_id)
@@ -1375,4 +1590,372 @@ class CRMRepository:
             if run:
                 run.status = status
                 run.finished_at = datetime.now(UTC)
+            await session.commit()
+
+    # -- DM flow executions --------------------------------------------
+
+    async def create_dm_flow_execution(
+        self, delivery_id: int, root_wa_message_id: str
+    ) -> dict[str, Any] | None:
+        if not root_wa_message_id:
+            raise ValueError("Meta did not return a message ID for the flow execution")
+        async with self.database.session_factory() as session:
+            existing = await session.scalar(
+                select(DMFlowExecution).where(
+                    DMFlowExecution.campaign_delivery_id == delivery_id
+                )
+            )
+            if existing:
+                return as_dict(existing)
+            record = await session.execute(
+                select(CampaignDelivery, CampaignRun, Campaign, CampaignRecipient)
+                .join(CampaignRun, CampaignRun.id == CampaignDelivery.run_id)
+                .join(Campaign, Campaign.id == CampaignRun.campaign_id)
+                .join(CampaignRecipient, CampaignRecipient.id == CampaignDelivery.recipient_id)
+                .where(CampaignDelivery.id == delivery_id)
+            )
+            row = record.first()
+            if not row:
+                raise ValueError("Campaign delivery was not found")
+            delivery, _run, campaign, recipient = row
+            if not campaign.dm_flow_version_id:
+                return None
+            if delivery.status not in {"accepted", "sent", "delivered", "read"}:
+                raise ValueError("A flow can start only after Meta accepts the campaign message")
+            version = await session.get(DMFlowVersion, campaign.dm_flow_version_id)
+            if not version:
+                raise ValueError("The campaign flow version no longer exists")
+            nodes, _outgoing = graph_indexes(version.graph)
+            start = next((node for node in nodes.values() if node["type"] == "start"), None)
+            if not start:
+                raise ValueError("The published flow has no campaign entry")
+            conversation = await session.scalar(
+                select(Conversation).where(Conversation.phone.in_(phone_aliases(recipient.phone)))
+            )
+            variables = json.loads(json.dumps(recipient.variables or {}, default=str))
+            variables.update(
+                {
+                    "phone": recipient.phone,
+                    "name": recipient.name or variables.get("name", ""),
+                    "campaign_id": campaign.id,
+                    "campaign_name": campaign.name,
+                }
+            )
+            execution = DMFlowExecution(
+                flow_version_id=version.id,
+                campaign_id=campaign.id,
+                campaign_delivery_id=delivery.id,
+                conversation_id=conversation.id if conversation else None,
+                phone=recipient.phone,
+                root_wa_message_id=root_wa_message_id,
+                current_node_id=start["id"],
+                status="processing_start",
+                variables=variables,
+                wake_at=datetime.now(UTC) + timedelta(minutes=1),
+            )
+            session.add(execution)
+            try:
+                await session.flush()
+                session.add(
+                    DMFlowExecutionEvent(
+                        execution_id=execution.id,
+                        event_type="execution_started",
+                        node_id=start["id"],
+                        details={"campaign_delivery_id": delivery.id},
+                    )
+                )
+                await session.commit()
+            except IntegrityError:
+                # Immediate delivery handling and recovery can discover the same
+                # accepted delivery concurrently. The unique delivery constraint
+                # elects one execution; all callers should receive that winner.
+                await session.rollback()
+                existing = await session.scalar(
+                    select(DMFlowExecution).where(
+                        DMFlowExecution.campaign_delivery_id == delivery_id
+                    )
+                )
+                if existing:
+                    return as_dict(existing)
+                raise
+            await session.refresh(execution)
+            return as_dict(execution)
+
+    async def next_missing_dm_flow_execution(self) -> dict[str, Any] | None:
+        async with self.database.session_factory() as session:
+            row = (
+                await session.execute(
+                    select(CampaignDelivery.id, CampaignDelivery.wa_message_id)
+                    .join(CampaignRun, CampaignRun.id == CampaignDelivery.run_id)
+                    .join(Campaign, Campaign.id == CampaignRun.campaign_id)
+                    .outerjoin(
+                        DMFlowExecution,
+                        DMFlowExecution.campaign_delivery_id == CampaignDelivery.id,
+                    )
+                    .where(
+                        Campaign.dm_flow_version_id.is_not(None),
+                        CampaignDelivery.status.in_({"accepted", "sent", "delivered", "read"}),
+                        CampaignDelivery.wa_message_id.is_not(None),
+                        DMFlowExecution.id.is_(None),
+                    )
+                    .order_by(CampaignDelivery.id)
+                    .limit(1)
+                )
+            ).first()
+            if not row:
+                return None
+            delivery_id, wa_message_id = row
+            return {"delivery_id": delivery_id, "wa_message_id": wa_message_id}
+
+    async def get_dm_flow_execution(self, execution_id: int) -> dict[str, Any] | None:
+        async with self.database.session_factory() as session:
+            execution = await session.get(DMFlowExecution, execution_id)
+            if not execution:
+                return None
+            version = await session.get(DMFlowVersion, execution.flow_version_id)
+            flow = await session.get(DMFlow, version.flow_id) if version else None
+            item = as_dict(execution)
+            item["graph"] = version.graph if version else None
+            item["flow_name"] = flow.name if flow else "Deleted flow"
+            item["flow_version"] = version.version if version else None
+            return item
+
+    async def list_dm_flow_executions(
+        self, flow_id: int | None = None, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        async with self.database.session_factory() as session:
+            statement = (
+                select(DMFlowExecution, DMFlowVersion, DMFlow)
+                .join(DMFlowVersion, DMFlowVersion.id == DMFlowExecution.flow_version_id)
+                .join(DMFlow, DMFlow.id == DMFlowVersion.flow_id)
+                .order_by(DMFlowExecution.created_at.desc())
+                .limit(min(max(limit, 1), 500))
+            )
+            if flow_id is not None:
+                statement = statement.where(DMFlow.id == flow_id)
+            rows = (await session.execute(statement)).all()
+            return [
+                {
+                    **as_dict(execution),
+                    "flow_name": flow.name,
+                    "flow_version": version.version,
+                }
+                for execution, version, flow in rows
+            ]
+
+    async def dm_flow_execution_events(self, execution_id: int) -> list[dict[str, Any]]:
+        async with self.database.session_factory() as session:
+            rows = (
+                await session.scalars(
+                    select(DMFlowExecutionEvent)
+                    .where(DMFlowExecutionEvent.execution_id == execution_id)
+                    .order_by(DMFlowExecutionEvent.id)
+                )
+            ).all()
+            return [as_dict(row) for row in rows]
+
+    async def claim_dm_flow_inbound(
+        self,
+        phone: str,
+        inbound_message_id: str,
+        *,
+        context_message_id: str | None = None,
+        execution_id: int | None = None,
+        conversation_id: int | None = None,
+        text: str = "",
+        payload: str | None = None,
+    ) -> dict[str, Any] | None:
+        async with self.database.session_factory() as session:
+            already_claimed = await session.scalar(
+                select(DMFlowExecution.id).where(
+                    DMFlowExecution.last_inbound_message_id == inbound_message_id
+                )
+            )
+            if already_claimed is not None:
+                return None
+            if context_message_id and execution_id is None:
+                execution_id = await session.scalar(
+                    select(DMFlowExecution.id).where(
+                        DMFlowExecution.root_wa_message_id == context_message_id
+                    )
+                )
+                if execution_id is None:
+                    context_message = await session.scalar(
+                        select(Message).where(
+                            Message.wa_message_id == context_message_id,
+                            Message.sender == "dm_flow",
+                        )
+                    )
+                    metadata = context_message.metadata_json if context_message else {}
+                    candidate = (metadata or {}).get("dm_flow_execution_id")
+                    execution_id = int(candidate) if str(candidate or "").isdigit() else None
+                if execution_id is None:
+                    return None
+            statement = select(DMFlowExecution).where(
+                DMFlowExecution.status == "waiting_reply",
+                DMFlowExecution.phone.in_(phone_aliases(phone)),
+            )
+            if execution_id is not None:
+                statement = statement.where(DMFlowExecution.id == execution_id)
+            else:
+                statement = statement.order_by(DMFlowExecution.updated_at.desc()).limit(1)
+            execution = await session.scalar(statement.with_for_update())
+            if not execution:
+                return None
+            if execution.last_inbound_message_id == inbound_message_id:
+                return None
+            variables = dict(execution.variables or {})
+            variables["_pending_inbound"] = {"text": text, "payload": payload}
+            execution.variables = variables
+            execution.status = "processing_reply"
+            execution.wake_at = datetime.now(UTC) + timedelta(minutes=1)
+            execution.last_inbound_message_id = inbound_message_id
+            if conversation_id:
+                execution.conversation_id = conversation_id
+            session.add(
+                DMFlowExecutionEvent(
+                    execution_id=execution.id,
+                    event_type="inbound_claimed",
+                    node_id=execution.current_node_id,
+                    details={
+                        "message_id": inbound_message_id,
+                        "context_message_id": context_message_id,
+                    },
+                )
+            )
+            try:
+                await session.commit()
+            except IntegrityError:
+                await session.rollback()
+                duplicate_claim = await session.scalar(
+                    select(DMFlowExecution.id).where(
+                        DMFlowExecution.last_inbound_message_id == inbound_message_id
+                    )
+                )
+                if duplicate_claim is not None:
+                    return None
+                raise
+            return await self.get_dm_flow_execution(execution.id)
+
+    async def claim_due_dm_flow_execution(self) -> dict[str, Any] | None:
+        async with self.database.session_factory() as session:
+            execution = await session.scalar(
+                select(DMFlowExecution)
+                .where(
+                    DMFlowExecution.status.in_(
+                        {
+                            "waiting_delay",
+                            "waiting_reply",
+                            "processing_start",
+                            "processing_reply",
+                            "processing_delay",
+                            "processing_timeout",
+                        }
+                    ),
+                    DMFlowExecution.wake_at.is_not(None),
+                    DMFlowExecution.wake_at <= datetime.now(UTC),
+                )
+                .order_by(DMFlowExecution.wake_at)
+                .with_for_update(skip_locked=True)
+                .limit(1)
+            )
+            if not execution:
+                return None
+            previous_status = execution.status
+            resumed_from = {
+                "processing_delay": "waiting_delay",
+                "processing_timeout": "waiting_reply",
+            }.get(previous_status, previous_status)
+            execution.status = {
+                "waiting_delay": "processing_delay",
+                "waiting_reply": "processing_timeout",
+            }.get(previous_status, previous_status)
+            execution.wake_at = datetime.now(UTC) + timedelta(minutes=1)
+            session.add(
+                DMFlowExecutionEvent(
+                    execution_id=execution.id,
+                    event_type="execution_claimed",
+                    node_id=execution.current_node_id,
+                    details={"resumed_from": resumed_from},
+                )
+            )
+            await session.commit()
+            item = await self.get_dm_flow_execution(execution.id)
+            if item:
+                item["resumed_from"] = resumed_from
+            return item
+
+    async def set_dm_flow_execution_state(
+        self,
+        execution_id: int,
+        *,
+        current_node_id: str | None = None,
+        status: str | None = None,
+        variables: dict[str, Any] | None = None,
+        wake_at: datetime | None = None,
+        error: str | None = None,
+        event_type: str | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        async with self.database.session_factory() as session:
+            execution = await session.get(DMFlowExecution, execution_id, with_for_update=True)
+            if not execution:
+                return None
+            if current_node_id is not None:
+                execution.current_node_id = current_node_id
+            if status is not None:
+                execution.status = status
+            if variables is not None:
+                execution.variables = json.loads(json.dumps(variables, default=str))
+            execution.wake_at = wake_at
+            execution.error = error
+            if status in {"completed", "expired", "failed", "cancelled", "handed_off"}:
+                execution.completed_at = datetime.now(UTC)
+            if event_type:
+                session.add(
+                    DMFlowExecutionEvent(
+                        execution_id=execution.id,
+                        event_type=event_type,
+                        node_id=current_node_id or execution.current_node_id,
+                        details=json.loads(json.dumps(details or {}, default=str)),
+                    )
+                )
+            await session.commit()
+            await session.refresh(execution)
+            return as_dict(execution)
+
+    async def bind_dm_flow_conversation(self, execution_id: int, conversation_id: int) -> None:
+        async with self.database.session_factory() as session:
+            execution = await session.get(DMFlowExecution, execution_id)
+            if execution:
+                execution.conversation_id = conversation_id
+                await session.commit()
+
+    async def add_dm_flow_execution_event(
+        self,
+        execution_id: int,
+        event_type: str,
+        *,
+        node_id: str | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        async with self.database.session_factory() as session:
+            session.add(
+                DMFlowExecutionEvent(
+                    execution_id=execution_id,
+                    event_type=event_type,
+                    node_id=node_id,
+                    details=json.loads(json.dumps(details or {}, default=str)),
+                )
+            )
+            await session.commit()
+
+    async def update_contact_from_flow(self, phone: str, field: str, value: str) -> None:
+        async with self.database.session_factory() as session:
+            contact = await session.scalar(
+                select(Contact).where(Contact.phone.in_(phone_aliases(phone))).limit(1)
+            )
+            if not contact:
+                raise ValueError("Flow contact was not found")
+            setattr(contact, field, value or None)
             await session.commit()

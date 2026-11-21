@@ -31,11 +31,36 @@ def _message_text(message: dict[str, Any]) -> str:
     return f"[{kind or 'unsupported'}]"
 
 
+def _normalized_message(message: dict[str, Any]) -> dict[str, str | None]:
+    kind = str(message.get("type", ""))
+    payload = None
+    if kind == "button":
+        payload = str(message.get("button", {}).get("payload") or "") or None
+    elif kind == "interactive":
+        interactive = message.get("interactive", {})
+        reply = interactive.get("button_reply") or interactive.get("list_reply") or {}
+        payload = str(reply.get("id") or "") or None
+    return {
+        "id": str(message.get("id", "")),
+        "type": kind or "unsupported",
+        "text": _message_text(message),
+        "payload": payload,
+        "context_message_id": str(message.get("context", {}).get("id") or "") or None,
+    }
+
+
 class WebhookProcessor:
-    def __init__(self, settings: Settings, repository: CRMRepository, waba: WABAClient) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        repository: CRMRepository,
+        waba: WABAClient,
+        dm_flow_engine: Any | None = None,
+    ) -> None:
         self.settings = settings
         self.repository = repository
         self.waba = waba
+        self.dm_flow_engine = dm_flow_engine
 
     async def process(self, payload: dict[str, Any]) -> None:
         for entry in payload.get("entry", []):
@@ -75,19 +100,29 @@ class WebhookProcessor:
                 continue
             conversation = await self.repository.upsert_conversation(phone, contacts.get(phone, ""))
             timestamp = datetime.fromtimestamp(int(message.get("timestamp", "0")), UTC)
-            body = _message_text(message)
+            normalized = _normalized_message(message)
+            body = str(normalized["text"] or "")
             inserted = await self.repository.add_message(
                 conversation["id"],
                 direction="inbound",
                 body=body,
                 sender="customer",
-                wa_message_id=str(message.get("id", "")),
+                wa_message_id=str(normalized["id"] or ""),
                 message_type=str(message.get("type", "text")),
                 status="received",
                 metadata=message,
                 occurred_at=timestamp,
             )
             if inserted is None or conversation.get("is_taken_over"):
+                continue
+            if self.dm_flow_engine and await self.dm_flow_engine.handle_inbound(
+                phone=phone,
+                conversation_id=conversation["id"],
+                message_id=str(normalized["id"] or ""),
+                text=body,
+                payload=normalized["payload"],
+                context_message_id=normalized["context_message_id"],
+            ):
                 continue
             reply = respond(
                 conversation.get("bot_state"),

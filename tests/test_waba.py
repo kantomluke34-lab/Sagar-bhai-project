@@ -142,3 +142,33 @@ async def test_media_template_send_includes_header_and_body_parameters() -> None
         "filename": "brochure.pdf",
     }
     assert [item["text"] for item in components[1]["parameters"]] == ["Asha", "PowerMill"]
+
+
+@pytest.mark.asyncio
+async def test_template_send_maps_flow_choices_to_quick_reply_payloads() -> None:
+    client = WABAClient(settings())
+    client._post = AsyncMock(return_value={"messages": [{"id": "wamid.flow"}]})
+
+    message_id = await client.send_template(
+        "919876543210",
+        "campaign_reply",
+        "en_US",
+        quick_reply_payloads=["dmf:yes", "dmf:no"],
+    )
+
+    components = client._post.await_args.args[1]["template"]["components"]
+    assert message_id == "wamid.flow"
+    assert components == [
+        {
+            "type": "button",
+            "sub_type": "quick_reply",
+            "index": "0",
+            "parameters": [{"type": "payload", "payload": "dmf:yes"}],
+        },
+        {
+            "type": "button",
+            "sub_type": "quick_reply",
+            "index": "1",
+            "parameters": [{"type": "payload", "payload": "dmf:no"}],
+        },
+    ]

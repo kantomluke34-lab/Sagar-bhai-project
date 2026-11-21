@@ -74,6 +74,35 @@ class WABAClient:
         )
         return str(response.get("messages", [{}])[0].get("id", ""))
 
+    async def send_reply_buttons(
+        self, phone: str, message: str, buttons: list[dict[str, str]]
+    ) -> str:
+        if not 1 <= len(buttons) <= 3:
+            raise WABAError("WhatsApp reply messages require 1-3 buttons")
+        response = await self._post(
+            f"{self.settings.meta_phone_number_id}/messages",
+            {
+                "messaging_product": "whatsapp",
+                "recipient_type": "individual",
+                "to": phone,
+                "type": "interactive",
+                "interactive": {
+                    "type": "button",
+                    "body": {"text": message},
+                    "action": {
+                        "buttons": [
+                            {
+                                "type": "reply",
+                                "reply": {"id": button["payload"], "title": button["title"]},
+                            }
+                            for button in buttons
+                        ]
+                    },
+                },
+            },
+        )
+        return str(response.get("messages", [{}])[0].get("id", ""))
+
     async def send_template(
         self,
         phone: str,
@@ -84,6 +113,7 @@ class WABAClient:
         header_type: str | None = None,
         header_media_id: str | None = None,
         header_filename: str | None = None,
+        quick_reply_payloads: list[str] | None = None,
     ) -> str:
         components: list[dict[str, Any]] = []
         normalized_header = str(header_type or "").upper()
@@ -106,6 +136,15 @@ class WABAClient:
                 {
                     "type": "body",
                     "parameters": [{"type": "text", "text": value} for value in parameters],
+                }
+            )
+        for index, payload in enumerate(quick_reply_payloads or []):
+            components.append(
+                {
+                    "type": "button",
+                    "sub_type": "quick_reply",
+                    "index": str(index),
+                    "parameters": [{"type": "payload", "payload": payload}],
                 }
             )
         response = await self._post(

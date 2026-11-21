@@ -14,8 +14,9 @@ from typing import Any
 from openpyxl import load_workbook
 from xlrd import open_workbook
 
+from .dm_flows import campaign_entry_choices, normalize_reply
 from .repository import CRMRepository
-from .waba import WABAClient
+from .waba import WABAClient, WABAError
 
 LOGGER = logging.getLogger(__name__)
 PHONE_HINTS = {"phone", "mobile", "number", "whatsapp", "contact", "cell", "tel", "mob"}
@@ -129,11 +130,13 @@ class CampaignScheduler:
         waba: WABAClient,
         media_root: str,
         poll_seconds: int = 10,
+        dm_flow_engine: Any | None = None,
     ) -> None:
         self.repository = repository
         self.waba = waba
         self.media_root = Path(media_root)
         self.poll_seconds = max(5, poll_seconds)
+        self.dm_flow_engine = dm_flow_engine
         self._task: asyncio.Task[None] | None = None
         self._stopping = asyncio.Event()
 
@@ -166,6 +169,7 @@ class CampaignScheduler:
                     await asyncio.shield(self.repository.fail_campaign_run(
                         claimed["campaign"]["id"], claimed["run"]["id"],
                         "Campaign interrupted. Check delivery results before retrying.",
+                        pending_status="uncertain",
                     ))
                 raise
             except Exception:
@@ -174,6 +178,7 @@ class CampaignScheduler:
                     await self.repository.fail_campaign_run(
                         claimed["campaign"]["id"], claimed["run"]["id"],
                         "Campaign interrupted. Check delivery results before retrying.",
+                        pending_status="uncertain",
                     )
             try:
                 await asyncio.wait_for(self._stopping.wait(), timeout=self.poll_seconds)
@@ -185,6 +190,36 @@ class CampaignScheduler:
         run = claimed["run"]
         template = claimed["template"]
         asset = claimed.get("asset")
+        quick_reply_payloads: list[str] | None = None
+        if campaign.get("dm_flow_version_id"):
+            version = await self.repository.get_dm_flow_version(
+                int(campaign["dm_flow_version_id"])
+            )
+            if not version:
+                await self.repository.fail_campaign_run(
+                    campaign["id"], run["id"], "Published DM flow version is unavailable"
+                )
+                return
+            choices = campaign_entry_choices(version["graph"])
+            template_quick_replies = [
+                button
+                for button in template.get("buttons") or []
+                if str(button.get("type", "")).upper() == "QUICK_REPLY"
+            ]
+            if template_quick_replies:
+                labels_match = all(
+                    normalize_reply(str(button.get("text") or button.get("title") or ""))
+                    == normalize_reply(str(choice.get("label") or ""))
+                    for button, choice in zip(template_quick_replies, choices, strict=False)
+                )
+                if len(template_quick_replies) != len(choices) or not labels_match:
+                    await self.repository.fail_campaign_run(
+                        campaign["id"],
+                        run["id"],
+                        "Template quick replies no longer match the published DM flow",
+                    )
+                    return
+                quick_reply_payloads = [f"dmf:{choice['key']}" for choice in choices]
         media_id: str | None = None
         if template.get("header_format") in {"IMAGE", "VIDEO", "DOCUMENT"}:
             if not asset:
@@ -203,6 +238,7 @@ class CampaignScheduler:
             if state in {"paused", "cancelled"}:
                 await self.repository.interrupt_campaign_run(campaign["id"], run["id"], state)
                 return
+            send_started = False
             try:
                 if not await self.repository.contact_opted_in(delivery.get("contact_id"), delivery["phone"]):
                     await self.repository.mark_campaign_delivery(
@@ -212,6 +248,7 @@ class CampaignScheduler:
                 parameters = render_parameters(
                     campaign.get("parameter_mapping", []), delivery["variables"]
                 )
+                send_started = True
                 wa_id = await self.waba.send_template(
                     delivery["phone"],
                     template["name"],
@@ -220,13 +257,43 @@ class CampaignScheduler:
                     header_type=template.get("header_format"),
                     header_media_id=media_id,
                     header_filename=asset.get("original_name") if asset else None,
+                    quick_reply_payloads=quick_reply_payloads,
                 )
+                if not wa_id:
+                    raise ValueError(
+                        "Meta returned no message ID; verify delivery before retrying"
+                    )
                 await self.repository.mark_campaign_delivery(
                     delivery["delivery_id"], "accepted", wa_message_id=wa_id, parameters=parameters
                 )
-            except Exception as exc:
+                if self.dm_flow_engine and campaign.get("dm_flow_version_id"):
+                    try:
+                        await self.dm_flow_engine.start_for_delivery(
+                            delivery["delivery_id"], wa_id
+                        )
+                    except Exception:
+                        LOGGER.exception(
+                            "dm_flow_start_failed",
+                            extra={
+                                "event": "dm_flow_start_failed",
+                                "campaign_id": campaign["id"],
+                                "delivery_id": delivery["delivery_id"],
+                            },
+                        )
+            except WABAError as exc:
                 await self.repository.mark_campaign_delivery(
                     delivery["delivery_id"], "failed", error=str(exc)[:2000]
+                )
+            except Exception as exc:
+                await self.repository.mark_campaign_delivery(
+                    delivery["delivery_id"],
+                    "uncertain" if send_started else "failed",
+                    error=(
+                        "Send result was not recorded; verify delivery with Meta before retrying. "
+                        f"{str(exc)[:1800]}"
+                        if send_started
+                        else str(exc)[:2000]
+                    ),
                 )
             throttle = float(campaign.get("throttle_seconds") or 0)
             if throttle:

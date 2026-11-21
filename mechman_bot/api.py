@@ -2,27 +2,71 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import re
 import string
 import uuid
+from collections import deque
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
+from time import monotonic
 from typing import Annotated, Any, Literal
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .auth import create_access_token, current_user_dependency, hash_password, verify_password
 from .campaigns import infer_media_type, normalize_phone, parse_recipient_file, render_parameters
 from .config import Settings
+from .dm_flows import (
+    DMFlowCommand,
+    DMFlowCreate,
+    DMFlowUpdate,
+    FlowGraph,
+    campaign_entry_choices,
+    normalize_reply,
+)
 from .repository import CRMRepository
 from .waba import WABAClient, WABAError
 
 IST = ZoneInfo("Asia/Kolkata")
 BUSINESS_START = time(9, 0)
 BUSINESS_END = time(18, 30)
+
+
+class LoginRateLimiter:
+    """Small bounded login throttle for the single-admin dashboard."""
+
+    def __init__(self, max_failures: int = 5, window_seconds: int = 60) -> None:
+        self.max_failures = max_failures
+        self.window_seconds = window_seconds
+        self._failures: dict[str, deque[float]] = {}
+        self._lock = asyncio.Lock()
+
+    async def acquire(self, key: str) -> int | None:
+        now = monotonic()
+        async with self._lock:
+            attempts = self._failures.setdefault(key, deque())
+            while attempts and now - attempts[0] >= self.window_seconds:
+                attempts.popleft()
+            if len(attempts) >= self.max_failures:
+                return max(1, int(self.window_seconds - (now - attempts[0])))
+            attempts.append(now)
+            if len(self._failures) > 10_000:
+                stale = [
+                    item_key
+                    for item_key, values in self._failures.items()
+                    if not values or now - values[-1] >= self.window_seconds
+                ]
+                for item_key in stale:
+                    self._failures.pop(item_key, None)
+            return None
+
+    async def clear(self, key: str) -> None:
+        async with self._lock:
+            self._failures.pop(key, None)
 MEETING_STATUSES = {"requested", "confirmed", "scheduled", "completed", "cancelled", "no_show"}
 LEAD_STAGES = {"new", "qualified", "proposal", "won", "lost"}
 
@@ -182,10 +226,12 @@ class CampaignCreate(BaseModel):
     consent_confirmed: bool = False
     consent_source: str | None = Field(default=None, max_length=120)
     consent_captured_at: datetime | None = None
+    consent_evidence: str | None = Field(default=None, min_length=3, max_length=500)
     schedule_type: Literal["once", "daily", "weekly"] = "once"
     scheduled_at: datetime
     parameter_mapping: list[str] = Field(default_factory=list, max_length=20)
     asset_id: int | None = None
+    dm_flow_version_id: int | None = None
     throttle_seconds: float = Field(default=1, ge=0, le=10)
 
     @model_validator(mode="after")
@@ -195,8 +241,15 @@ class CampaignCreate(BaseModel):
         if self.source_type in {"csv", "paste"}:
             if not self.recipients:
                 raise ValueError("Add at least one valid recipient")
-            if not self.consent_confirmed or not self.consent_source or not self.consent_captured_at:
-                raise ValueError("Recipients require consent confirmation, source, and date")
+            if (
+                not self.consent_confirmed
+                or not self.consent_source
+                or not self.consent_captured_at
+                or not self.consent_evidence
+            ):
+                raise ValueError(
+                    "Recipients require consent confirmation, source, date, and evidence reference"
+                )
         return self
 
 
@@ -280,14 +333,24 @@ def _slot(day: date, start: time, duration: int) -> tuple[datetime, datetime]:
 def build_router(settings: Settings, repository: CRMRepository, waba: WABAClient) -> APIRouter:
     router = APIRouter()
     current_user = current_user_dependency(settings, repository)
+    login_limiter = LoginRateLimiter()
 
     @router.post("/api/auth/login")
-    async def login(payload: LoginRequest) -> dict[str, Any]:
+    async def login(payload: LoginRequest, request: Request) -> dict[str, Any]:
+        client_key = request.client.host if request.client else "unknown"
+        retry_after = await login_limiter.acquire(client_key)
+        if retry_after is not None:
+            raise HTTPException(
+                status_code=429,
+                detail="Too many login attempts. Try again shortly.",
+                headers={"Retry-After": str(retry_after)},
+            )
         user = await repository.get_user_by_username(payload.username)
         if user is None or not verify_password(payload.password, str(user["password_hash"])):
             raise HTTPException(status_code=401, detail="Invalid username or password")
         if not user["is_active"]:
             raise HTTPException(status_code=403, detail="Account disabled")
+        await login_limiter.clear(client_key)
         return {
             "access_token": create_access_token(int(user["id"]), "admin", settings),
             "token_type": "bearer",
@@ -704,6 +767,116 @@ def build_router(settings: Settings, repository: CRMRepository, waba: WABAClient
             )
         return {"synced": len(remote)}
 
+    @router.get("/api/dm-flows")
+    async def dm_flows(
+        published_only: bool = False,
+        _: dict[str, Any] = Depends(current_user),
+    ) -> list[dict[str, Any]]:
+        return await repository.list_dm_flows(published_only)
+
+    @router.post("/api/dm-flows", status_code=status.HTTP_201_CREATED)
+    async def create_dm_flow(
+        payload: DMFlowCreate, user: dict[str, Any] = Depends(current_user)
+    ) -> dict[str, Any]:
+        return await repository.create_dm_flow(
+            payload.name,
+            payload.description,
+            payload.graph.model_dump(mode="json"),
+            str(user["username"]),
+        )
+
+    @router.post("/api/dm-flows/validate")
+    async def validate_dm_flow(
+        graph: FlowGraph, _: dict[str, Any] = Depends(current_user)
+    ) -> dict[str, Any]:
+        return {"valid": True, "graph": graph.model_dump(mode="json")}
+
+    @router.get("/api/dm-flows/executions")
+    async def dm_flow_executions(
+        limit: int = Query(default=100, ge=1, le=500),
+        _: dict[str, Any] = Depends(current_user),
+    ) -> list[dict[str, Any]]:
+        return await repository.list_dm_flow_executions(limit=limit)
+
+    @router.get("/api/dm-flows/executions/{execution_id}")
+    async def dm_flow_execution(
+        execution_id: int, _: dict[str, Any] = Depends(current_user)
+    ) -> dict[str, Any]:
+        result = await repository.get_dm_flow_execution(execution_id)
+        if not result:
+            raise HTTPException(status_code=404, detail="DM flow execution not found")
+        result["events"] = await repository.dm_flow_execution_events(execution_id)
+        return result
+
+    @router.get("/api/dm-flows/{flow_id}")
+    async def dm_flow_detail(
+        flow_id: int, _: dict[str, Any] = Depends(current_user)
+    ) -> dict[str, Any]:
+        result = await repository.get_dm_flow(flow_id)
+        if not result:
+            raise HTTPException(status_code=404, detail="DM flow not found")
+        result["executions"] = await repository.list_dm_flow_executions(flow_id, limit=100)
+        return result
+
+    @router.put("/api/dm-flows/{flow_id}")
+    async def update_dm_flow(
+        flow_id: int,
+        payload: DMFlowUpdate,
+        _: dict[str, Any] = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            result = await repository.update_dm_flow(
+                flow_id,
+                payload.expected_version,
+                payload.name,
+                payload.description,
+                payload.graph.model_dump(mode="json"),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if not result:
+            raise HTTPException(status_code=404, detail="DM flow not found")
+        return result
+
+    @router.post("/api/dm-flows/{flow_id}/publish")
+    async def publish_dm_flow(
+        flow_id: int,
+        payload: DMFlowCommand,
+        user: dict[str, Any] = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            result = await repository.publish_dm_flow(
+                flow_id, payload.expected_version, str(user["username"])
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if not result:
+            raise HTTPException(status_code=404, detail="DM flow not found")
+        return result
+
+    @router.post("/api/dm-flows/{flow_id}/duplicate", status_code=status.HTTP_201_CREATED)
+    async def duplicate_dm_flow(
+        flow_id: int, user: dict[str, Any] = Depends(current_user)
+    ) -> dict[str, Any]:
+        result = await repository.duplicate_dm_flow(flow_id, str(user["username"]))
+        if not result:
+            raise HTTPException(status_code=404, detail="DM flow not found")
+        return result
+
+    @router.post("/api/dm-flows/{flow_id}/archive")
+    async def archive_dm_flow(
+        flow_id: int,
+        payload: DMFlowCommand,
+        _: dict[str, Any] = Depends(current_user),
+    ) -> dict[str, Any]:
+        try:
+            result = await repository.archive_dm_flow(flow_id, payload.expected_version)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if not result:
+            raise HTTPException(status_code=404, detail="DM flow not found")
+        return result
+
     @router.post("/api/campaigns/import/preview")
     async def preview_campaign_import(
         upload: UploadFile = File(...), _: dict[str, Any] = Depends(current_user)
@@ -811,6 +984,29 @@ def build_router(settings: Settings, repository: CRMRepository, waba: WABAClient
         template = await repository.get_template(payload.template_id)
         if not template or str(template.get("status", "")).upper() != "APPROVED":
             raise HTTPException(status_code=422, detail="Choose an approved Meta template")
+        flow_version = None
+        if payload.dm_flow_version_id:
+            flow_version = await repository.get_dm_flow_version(payload.dm_flow_version_id)
+            if not flow_version or flow_version.get("flow_archived"):
+                raise HTTPException(status_code=422, detail="Choose an available published DM flow")
+            quick_reply_buttons = [
+                button
+                for button in template.get("buttons") or []
+                if str(button.get("type", "")).upper() == "QUICK_REPLY"
+            ]
+            entry_choices = campaign_entry_choices(flow_version["graph"])
+            labels_match = all(
+                normalize_reply(str(button.get("text") or button.get("title") or ""))
+                == normalize_reply(str(choice.get("label") or ""))
+                for button, choice in zip(quick_reply_buttons, entry_choices, strict=False)
+            )
+            if quick_reply_buttons and (
+                len(quick_reply_buttons) != len(entry_choices) or not labels_match
+            ):
+                raise HTTPException(
+                    status_code=422,
+                    detail="The template quick replies must match the DM flow entry choice labels in the same order.",
+                )
         required = max(
             [int(value) for value in re.findall(r"\{\{(\d+)\}\}", template["body"])],
             default=0,
@@ -840,6 +1036,7 @@ def build_router(settings: Settings, repository: CRMRepository, waba: WABAClient
                     "variables": row,
                     "consent_source": row["consent_source"],
                     "consent_captured_at": row["consent_captured_at"],
+                    "consent_evidence": row.get("consent_evidence") or {},
                 }
                 for row in rows
             ]
@@ -859,7 +1056,11 @@ def build_router(settings: Settings, repository: CRMRepository, waba: WABAClient
                     "variables": row.variables,
                     "consent_source": payload.consent_source,
                     "consent_captured_at": payload.consent_captured_at,
-                    "consent_evidence": {"method": "csv_confirmation", "confirmed_by": user["username"]},
+                    "consent_evidence": {
+                        "method": f"{payload.source_type}_confirmation",
+                        "confirmed_by": user["username"],
+                        "reference": payload.consent_evidence,
+                    },
                 }
                 for row in payload.recipients
             ]
@@ -882,6 +1083,7 @@ def build_router(settings: Settings, repository: CRMRepository, waba: WABAClient
                 "template_id": payload.template_id,
                 "list_id": payload.list_id,
                 "asset_id": payload.asset_id,
+                "dm_flow_version_id": payload.dm_flow_version_id,
                 "source_type": payload.source_type,
                 "schedule_type": payload.schedule_type,
                 "scheduled_at": scheduled_at.astimezone(UTC),
@@ -901,10 +1103,12 @@ def build_router(settings: Settings, repository: CRMRepository, waba: WABAClient
     async def campaign_action(
         campaign_id: int,
         action: Literal["pause", "resume", "cancel"],
-        _: dict[str, Any] = Depends(current_user),
+        user: dict[str, Any] = Depends(current_user),
     ) -> dict[str, Any]:
         try:
-            result = await repository.set_campaign_status(campaign_id, action)
+            result = await repository.set_campaign_status(
+                campaign_id, action, str(user["username"])
+            )
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         if not result:
