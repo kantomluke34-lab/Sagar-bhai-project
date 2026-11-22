@@ -4,8 +4,27 @@ from unittest.mock import AsyncMock
 import pytest
 from openpyxl import Workbook
 
+from mechman_bot.api import CampaignCreate
 from mechman_bot.campaigns import CampaignScheduler, parse_recipient_file, render_parameters
 from mechman_bot.dm_flows import default_graph
+
+
+def test_saved_audience_campaign_accepts_blank_irrelevant_consent_fields() -> None:
+    payload = CampaignCreate.model_validate(
+        {
+            "name": "Saved audience campaign",
+            "template_id": 1,
+            "source_type": "list",
+            "list_id": 7,
+            "expected_recipient_count": 3,
+            "scheduled_at": "2027-01-01T10:00:00+05:30",
+            "consent_source": "",
+            "consent_evidence": "",
+        }
+    )
+
+    assert payload.consent_source is None
+    assert payload.consent_evidence is None
 
 
 def test_csv_import_detects_phone_and_preserves_personalization_columns() -> None:

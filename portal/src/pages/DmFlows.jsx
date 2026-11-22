@@ -32,7 +32,7 @@ import {
   UserRoundPen,
   X,
 } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import api from '../api'
 import { PageTitle, Status } from './Dashboard'
 
@@ -223,6 +223,9 @@ export default function DmFlows() {
       validHandles.add('timeout')
       setEdges((current) => current.filter((edge) => edge.source !== selectedId || validHandles.has(edge.sourceHandle || 'default')))
     }
+    if (Object.hasOwn(partial, 'timeout_minutes') && !partial.timeout_minutes && selected) {
+      setEdges((current) => current.filter((edge) => edge.source !== selectedId || edge.sourceHandle !== 'timeout'))
+    }
     setNodes((current) => current.map((node) => node.id === selectedId ? { ...node, data: { ...node.data, config: { ...node.data.config, ...partial } } } : node))
   }
 
@@ -317,12 +320,12 @@ function NodeInspector({ node, change, remove }) {
   function updateChoice(index, partial) { change({ choices: choices.map((choice, current) => current === index ? { ...choice, ...partial } : choice) }) }
   function addChoice() {
     const number = choices.length + 1
-    change({ choices: [...choices, { key: `choice_${number}`, label: `Choice ${number}`, aliases: [`choice ${number}`] }] })
+    change({ choices: [...choices, { key: `choice_${number}`, label: `Choice ${number}`, aliases: [] }] })
   }
   return <><div className="inspector-head"><div><span className="eyebrow">STEP SETTINGS</span><h3>{labels[type]}</h3></div>{type !== 'start' && <button className="icon-button danger" aria-label="Delete step" onClick={remove}><Trash2 /></button>}</div>
     {['send_text', 'send_buttons'].includes(type) && <label>Message<textarea rows="6" maxLength={type === 'send_buttons' ? 1024 : 4096} value={config.text || ''} onChange={(event) => change({ text: event.target.value })} /></label>}
-    {['reply_router', 'send_buttons'].includes(type) && <div className="choice-editor"><strong>Reply choices</strong>{choices.map((choice, index) => <div key={choice.key} className="choice-row"><span>{choice.key}</span><input aria-label={`Choice ${index + 1} label`} maxLength="20" value={choice.label} onChange={(event) => updateChoice(index, { label: event.target.value })} /><input aria-label={`Choice ${index + 1} aliases`} value={(choice.aliases || []).join(', ')} onChange={(event) => updateChoice(index, { aliases: event.target.value.split(',').map((value) => value.trim()).filter(Boolean) })} placeholder="yes, y" />{choices.length > 1 && <button className="icon-button" aria-label={`Remove ${choice.label}`} onClick={() => change({ choices: choices.filter((_, current) => current !== index) })}><X /></button>}</div>)}{choices.length < 3 && <button className="secondary-button compact" onClick={addChoice}><Plus size={13} />Add choice</button>}<small>Connect every choice handle. The optional Other handle is the fallback.</small></div>}
-    {['reply_router', 'send_buttons', 'wait_reply'].includes(type) && <label>Timeout minutes <small>Leave empty for no timeout.</small><input type="number" min="1" max="10080" value={config.timeout_minutes || ''} onChange={(event) => change({ timeout_minutes: event.target.value ? Number(event.target.value) : undefined })} /></label>}
+    {['reply_router', 'send_buttons'].includes(type) && <div className="choice-editor"><div className="choice-editor-title"><strong>Customer replies</strong><small>Each choice creates a branch on the canvas.</small></div>{choices.map((choice, index) => <ChoiceEditor key={`${node.id}:${choice.key}`} choice={choice} index={index} isButton={type === 'send_buttons'} update={(partial) => updateChoice(index, partial)} remove={choices.length > 1 ? () => change({ choices: choices.filter((_, current) => current !== index) }) : null} />)}{choices.length < 3 && <button className="secondary-button compact" onClick={addChoice}><Plus size={13} />Add choice</button>}<small>Connect each choice branch. “Other” catches replies that do not match any choice.</small></div>}
+    {['reply_router', 'send_buttons', 'wait_reply'].includes(type) && <div className="timeout-editor"><label className="timeout-toggle"><input type="checkbox" checked={Boolean(config.timeout_minutes)} onChange={(event) => change({ timeout_minutes: event.target.checked ? 60 : undefined })} /><span><strong>Add a no-reply path</strong><small>Continue automatically if the customer does not reply.</small></span></label>{config.timeout_minutes && <label>Wait before continuing<div className="input-with-unit"><input aria-label="No-reply wait time" type="number" min="1" max="10080" value={config.timeout_minutes} onChange={(event) => change({ timeout_minutes: event.target.value ? Number(event.target.value) : 1 })} /><span>minutes</span></div><small>Connect the Timeout branch to define what happens next.</small></label>}</div>}
     {type === 'condition' && <><label>Variable<input value={config.field || ''} onChange={(event) => change({ field: event.target.value })} placeholder="last_reply_choice" /></label><label>Operator<select value={config.operator || 'equals'} onChange={(event) => change({ operator: event.target.value })}><option value="equals">Equals</option><option value="not_equals">Does not equal</option><option value="contains">Contains</option><option value="exists">Exists</option></select></label>{config.operator !== 'exists' && <label>Value<input value={config.value || ''} onChange={(event) => change({ value: event.target.value })} /></label>}</>}
     {type === 'delay' && <label>Delay in minutes<input type="number" min="1" max="10080" value={config.minutes || 1} onChange={(event) => change({ minutes: Number(event.target.value) })} /></label>}
     {type === 'update_contact' && <><label>Contact field<select value={config.field || 'lead_stage'} onChange={(event) => change({ field: event.target.value })}>{['name', 'email', 'company', 'designation', 'city', 'lead_stage', 'notes'].map((field) => <option key={field}>{field}</option>)}</select></label><label>Value<input value={config.value || ''} onChange={(event) => change({ value: event.target.value })} placeholder="Use {{last_reply}} for captured text" /></label></>}
@@ -330,6 +333,30 @@ function NodeInspector({ node, change, remove }) {
     {type === 'start' && <p className="muted">This step runs after Meta accepts the campaign message. It cannot be removed.</p>}
     {type === 'end' && <p className="muted">The execution completes when it reaches this step.</p>}
   </>
+}
+
+function ChoiceEditor({ choice, index, isButton, update, remove }) {
+  const additionalAliases = () => {
+    const labelMatch = String(choice.label || '').trim().toLocaleLowerCase()
+    return (choice.aliases || []).filter((alias) => String(alias).trim().toLocaleLowerCase() !== labelMatch)
+  }
+  const [aliasText, setAliasText] = useState(() => additionalAliases().join(', '))
+  const aliasInput = useRef(null)
+
+  useEffect(() => {
+    if (document.activeElement !== aliasInput.current) setAliasText(additionalAliases().join(', '))
+  }, [choice.label])
+
+  function updateAliases(value) {
+    setAliasText(value)
+    update({ aliases: value.split(',').map((alias) => alias.trim()).filter(Boolean) })
+  }
+
+  return <section className="choice-card" aria-label={`Choice ${index + 1}`}>
+    <div className="choice-card-head"><strong>Choice {index + 1}</strong>{remove && <button className="icon-button" aria-label={`Remove ${choice.label} choice`} onClick={remove}><X size={16} /></button>}</div>
+    <label>{isButton ? 'Button text' : 'Choice name'}<input aria-label={`Choice ${index + 1} name`} maxLength="20" value={choice.label} onChange={(event) => update({ label: event.target.value })} /><small>This exact reply is always accepted.</small></label>
+    <label>Also accept <span className="optional-label">Optional</span><input ref={aliasInput} aria-label={`Choice ${index + 1} additional replies`} value={aliasText} onChange={(event) => updateAliases(event.target.value)} placeholder="y, yep, sure" /><small>Add other accepted replies, separated by commas.</small></label>
+  </section>
 }
 
 function ExecutionSummary({ executions }) {

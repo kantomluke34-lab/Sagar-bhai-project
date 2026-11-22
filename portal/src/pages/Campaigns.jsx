@@ -17,6 +17,25 @@ const headerFormat = (template) => String(template?.header_format || (template?.
 const variableCount = (template) => Math.max(0, ...[...(template?.body?.matchAll(/\{\{(\d+)\}\}/g) || [])].map((match) => Number(match[1])))
 const normalizePhone = (value) => { const digits = String(value || '').replace(/\D/g, ''); return /^[6-9]\d{9}$/.test(digits) ? `91${digits}` : digits }
 
+export function requestErrorMessage(requestError, fallback) {
+  const detail = requestError?.response?.data?.detail
+  if (typeof detail === 'string' && detail.trim()) return detail
+  if (Array.isArray(detail)) {
+    const messages = detail.map((item) => {
+      if (typeof item === 'string') return item
+      const field = (item?.loc || []).filter((part) => part !== 'body').join(' › ')
+      const message = item?.msg || item?.message
+      return message ? `${field ? `${field}: ` : ''}${message}` : ''
+    }).filter(Boolean)
+    if (messages.length) return messages.join(' ')
+  }
+  if (detail && typeof detail === 'object') {
+    const message = detail.message || detail.msg
+    if (typeof message === 'string' && message.trim()) return message
+  }
+  return requestError?.message || fallback
+}
+
 function prepareImportedRecipients(rows, phoneColumn, nameColumn = '') {
   const seen = new Set()
   const recipients = []
@@ -72,7 +91,7 @@ export default function Campaigns() {
       setTemplates((templateResult.data || []).filter(approved))
       setAudiences(audienceResult.data || [])
       setDmFlows(flowResult.data || [])
-    } catch (requestError) { setError(requestError.response?.data?.detail || 'Could not load campaigns.') }
+    } catch (requestError) { setError(requestErrorMessage(requestError, 'Could not load campaigns.')) }
     finally { setLoading(false) }
   }
   useEffect(() => { load() }, [])
@@ -145,7 +164,7 @@ export default function Campaigns() {
       const { data } = await api.post('/api/campaigns/import/preview', form)
       setImportData(data); setPhoneColumn(data.phone_column || ''); setNameColumn(data.columns.find((column) => /name/i.test(column)) || '')
       setMapping(Array(requiredVariables).fill(''))
-    } catch (requestError) { setError(requestError.response?.data?.detail || 'Could not read recipient file.') }
+    } catch (requestError) { setError(requestErrorMessage(requestError, 'Could not read recipient file.')) }
     finally { setBusy(false) }
   }
 
@@ -157,7 +176,7 @@ export default function Campaigns() {
       const form = new FormData(); form.append('upload', file)
       const { data } = await api.post('/api/campaigns/media', form)
       setDraft((value) => ({ ...value, asset_id: data.id, asset_name: data.original_name }))
-    } catch (requestError) { setError(requestError.response?.data?.detail || 'Media upload failed.') }
+    } catch (requestError) { setError(requestErrorMessage(requestError, 'Media upload failed.')) }
     finally { setBusy(false) }
   }
 
@@ -191,7 +210,10 @@ export default function Campaigns() {
         ...draft, template_id: Number(draft.template_id), dm_flow_version_id: draft.dm_flow_version_id ? Number(draft.dm_flow_version_id) : null, list_id: draft.source_type === 'list' ? Number(draft.list_id) : null,
         expected_recipient_count: draft.source_type === 'list' ? count : null,
         scheduled_at: new Date(`${draft.scheduled_at}:00+05:30`).toISOString(), parameter_mapping: mapping,
-        recipients, consent_captured_at: draft.consent_captured_at ? new Date(`${draft.consent_captured_at}T00:00:00+05:30`).toISOString() : null,
+        recipients,
+        consent_source: draft.source_type === 'list' ? null : draft.consent_source,
+        consent_captured_at: draft.source_type === 'list' ? null : draft.consent_captured_at ? new Date(`${draft.consent_captured_at}T00:00:00+05:30`).toISOString() : null,
+        consent_evidence: draft.source_type === 'list' ? null : draft.consent_evidence,
       }
       const { data } = await api.post('/api/campaigns', payload)
       setDraft(null); setNotice(`Campaign scheduled for ${data.total_recipients} recipients.`); await load()
@@ -199,7 +221,7 @@ export default function Campaigns() {
       if (requestError.response?.status === 409 && draft.source_type === 'list') {
         api.get('/api/audiences').then(({ data }) => setAudiences(data || [])).catch(() => {})
       }
-      setError(requestError.response?.data?.detail || requestError.message || 'Campaign could not be scheduled.')
+      setError(requestErrorMessage(requestError, 'Campaign could not be scheduled.'))
     }
     finally { setBusy(false) }
   }
@@ -209,7 +231,7 @@ export default function Campaigns() {
     if (name === 'retry-failed' && !window.confirm('Review the delivery log first. Retrying can send messages to these recipients again. Continue?')) return
     setBusy(true); setError('')
     try { await api.post(name === 'retry-failed' ? `/api/campaigns/${id}/deliveries/retry-failed` : `/api/campaigns/${id}/${name}`); await load(); if (detail?.id === id) await openDetail(id) }
-    catch (requestError) { setError(requestError.response?.data?.detail || `Could not ${name} campaign.`) }
+    catch (requestError) { setError(requestErrorMessage(requestError, `Could not ${name} campaign.`)) }
     finally { setBusy(false) }
   }
   async function openDetail(id) {
@@ -240,14 +262,14 @@ export default function Campaigns() {
       } else setNotice('Audience saved. Select “Use in campaign” when you are ready to send.')
       setAudienceDraft(null)
     }
-    catch (requestError) { setError(requestError.response?.data?.detail || 'Audience could not be saved.') }
+    catch (requestError) { setError(requestErrorMessage(requestError, 'Audience could not be saved.')) }
     finally { setBusy(false) }
   }
   async function deleteAudience(id) {
     if (!window.confirm('Delete this saved audience? Existing campaigns keep their recipient snapshots.')) return
     setBusy(true); setError('')
     try { await api.delete(`/api/audiences/${id}`); setNotice('Audience deleted.'); await load() }
-    catch (requestError) { setError(requestError.response?.data?.detail || 'Audience could not be deleted.') }
+    catch (requestError) { setError(requestErrorMessage(requestError, 'Audience could not be deleted.')) }
     finally { setBusy(false) }
   }
 

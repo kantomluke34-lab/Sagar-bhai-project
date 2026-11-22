@@ -234,6 +234,13 @@ class CampaignCreate(BaseModel):
     dm_flow_version_id: int | None = None
     throttle_seconds: float = Field(default=1, ge=0, le=10)
 
+    @field_validator("consent_source", "consent_evidence", mode="before")
+    @classmethod
+    def normalize_blank_optional_consent(cls, value: Any) -> Any:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
     @model_validator(mode="after")
     def validate_source(self) -> CampaignCreate:
         if self.source_type == "list" and not self.list_id:

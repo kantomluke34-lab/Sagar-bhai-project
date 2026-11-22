@@ -588,12 +588,26 @@ textarea { resize: vertical; }
 .flow-inspector label { display: grid; gap: 6px; margin: 0 0 15px; font-size: 12px; font-weight: 700; }
 .flow-inspector label small { color: var(--muted); font-weight: 400; }
 .flow-inspector input, .flow-inspector textarea, .flow-inspector select { width: 100%; }
-.choice-editor { display: grid; gap: 8px; margin-bottom: 16px; }
-.choice-editor > strong { font-size: 12px; }
+.choice-editor { display: grid; gap: 10px; margin-bottom: 18px; }
+.choice-editor-title { display: grid; gap: 2px; }
+.choice-editor-title > strong { font-size: 13px; }
+.choice-editor-title > small { color: var(--muted); font-size: 11px; }
 .choice-editor > small { color: var(--muted); font-size: 11px; line-height: 1.4; }
-.choice-row { display: grid; grid-template-columns: minmax(52px, .7fr) 1fr 1.5fr auto; gap: 5px; align-items: center; }
-.choice-row > span { overflow: hidden; color: var(--muted); font-family: monospace; font-size: 10px; text-overflow: ellipsis; }
-.choice-row input { height: 34px; min-width: 0; padding: 5px 7px; font-size: 11px; }
+.choice-card { display: grid; gap: 10px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: #fafbfc; }
+.choice-card-head { display: flex; min-height: 28px; align-items: center; justify-content: space-between; }
+.choice-card-head > strong { font-size: 12px; }
+.choice-card-head .icon-button { min-width: 32px; min-height: 32px; margin: -5px -5px -5px 0; }
+.choice-card label { margin: 0; }
+.choice-card label small { line-height: 1.35; }
+.optional-label { margin-left: 4px; color: var(--muted); font-size: 10px; font-weight: 500; }
+.timeout-editor { display: grid; gap: 12px; padding-top: 15px; border-top: 1px solid var(--line); }
+.flow-inspector .timeout-toggle { display: flex; gap: 9px; align-items: flex-start; margin: 0; cursor: pointer; }
+.flow-inspector .timeout-toggle input { width: 18px; height: 18px; min-height: 18px; flex: 0 0 auto; margin: 2px 0 0; }
+.timeout-toggle span { display: grid; gap: 2px; }
+.timeout-toggle strong { color: var(--ink); font-size: 12px; }
+.input-with-unit { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
+.input-with-unit input { border-radius: 9px 0 0 9px; }
+.input-with-unit span { align-self: stretch; display: flex; align-items: center; padding: 0 11px; border: 1px solid #ccd4df; border-left: 0; border-radius: 0 9px 9px 0; color: var(--muted); background: #f7f8fa; font-size: 11px; }
 .execution-summary { display: grid; gap: 8px; margin-top: 24px; padding-top: 18px; border-top: 1px solid var(--line); }
 .execution-summary > span { display: flex; align-items: center; justify-content: space-between; }
 .execution-summary small { color: var(--muted); }

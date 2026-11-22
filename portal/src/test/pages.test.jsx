@@ -5,7 +5,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 
 import BookingForm from '../pages/BookingForm'
-import Campaigns from '../pages/Campaigns'
+import Campaigns, { requestErrorMessage } from '../pages/Campaigns'
 import Conversations from '../pages/Conversations'
 import Layout from '../components/Layout'
 import Sidebar from '../components/Sidebar'
@@ -56,6 +56,14 @@ beforeEach(() => {
 afterEach(cleanup)
 
 describe('dashboard controls', () => {
+  test('campaign validation errors identify the rejected field', () => {
+    const message = requestErrorMessage({
+      response: { data: { detail: [{ loc: ['body', 'consent_evidence'], msg: 'String should have at least 3 characters' }] } },
+    }, 'Campaign could not be scheduled.')
+
+    expect(message).toBe('consent_evidence: String should have at least 3 characters')
+  })
+
   test('login submits credentials and reports an invalid login', async () => {
     const user = userEvent.setup()
     auth.user = null
