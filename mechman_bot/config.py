@@ -102,6 +102,10 @@ class Settings:
             raise ValueError("JWT_SECRET must be at least 32 characters")
         if len(self.admin_password) < 10:
             raise ValueError("ADMIN_PASSWORD must be at least 10 characters")
+        if not self.dashboard_auth_enabled:
+            raise ValueError("DASHBOARD_AUTH_ENABLED must remain enabled for the web service")
+        if self.waba_configured and not self.meta_app_secret:
+            raise ValueError("META_APP_SECRET is required when WhatsApp Cloud API is configured")
         if self.meeting_duration_minutes not in {30, 45, 60, 90, 120}:
             raise ValueError("MEETING_DURATION_MINUTES must be 30, 45, 60, 90, or 120")
         if any(not origin.startswith(("http://", "https://")) for origin in self.cors_origins):

@@ -7,6 +7,7 @@ from openpyxl import Workbook
 from mechman_bot.api import CampaignCreate
 from mechman_bot.campaigns import CampaignScheduler, parse_recipient_file, render_parameters
 from mechman_bot.dm_flows import default_graph
+from mechman_bot.waba import WABAError
 
 
 def test_saved_audience_campaign_accepts_blank_irrelevant_consent_fields() -> None:
@@ -66,13 +67,20 @@ async def test_campaign_does_not_send_after_consent_is_revoked(tmp_path) -> None
     repository.contact_opted_in.return_value = False
     waba = AsyncMock()
     scheduler = CampaignScheduler(repository, waba, str(tmp_path))
-    await scheduler._deliver({
-        "campaign": {"id": 1, "parameter_mapping": [], "throttle_seconds": 0},
-        "run": {"id": 2}, "template": {"name": "welcome", "language": "en"},
-        "deliveries": [{"delivery_id": 3, "contact_id": 4, "phone": "919876543210", "variables": {}}],
-    })
+    await scheduler._deliver(
+        {
+            "campaign": {"id": 1, "parameter_mapping": [], "throttle_seconds": 0},
+            "run": {"id": 2},
+            "template": {"name": "welcome", "language": "en"},
+            "deliveries": [
+                {"delivery_id": 3, "contact_id": 4, "phone": "919876543210", "variables": {}}
+            ],
+        }
+    )
     waba.send_template.assert_not_awaited()
-    repository.mark_campaign_delivery.assert_awaited_once_with(3, "failed", error="Contact is no longer opted in")
+    repository.mark_campaign_delivery.assert_awaited_once_with(
+        3, "failed", error="Contact is no longer opted in"
+    )
 
 
 @pytest.mark.asyncio
@@ -130,6 +138,70 @@ async def test_campaign_delivery_starts_its_pinned_flow_execution(tmp_path) -> N
     )
     flow_engine.start_for_delivery.assert_awaited_once_with(3, "wamid.campaign.1")
     repository.finish_campaign_run.assert_awaited_once_with(1, 2)
+
+
+@pytest.mark.asyncio
+async def test_meta_throttle_stops_remaining_campaign_deliveries(tmp_path) -> None:
+    repository = AsyncMock()
+    repository.campaign_status.return_value = "running"
+    repository.contact_opted_in.return_value = True
+    waba = AsyncMock()
+    waba.send_template.side_effect = WABAError("Meta rate limit", code=130429, http_status=429)
+    scheduler = CampaignScheduler(repository, waba, str(tmp_path))
+    claimed = {
+        "campaign": {"id": 1, "parameter_mapping": [], "throttle_seconds": 0},
+        "run": {"id": 2},
+        "template": {"name": "welcome", "language": "en_US"},
+        "deliveries": [
+            {
+                "delivery_id": 3,
+                "contact_id": 4,
+                "phone": "919876543210",
+                "variables": {},
+            },
+            {
+                "delivery_id": 5,
+                "contact_id": 6,
+                "phone": "919876543211",
+                "variables": {},
+            },
+        ],
+    }
+
+    await scheduler._deliver(claimed)
+
+    waba.send_template.assert_awaited_once()
+    error = repository.mark_campaign_delivery.await_args.kwargs["error"]
+    assert error.startswith("[meta_throttled]")
+    repository.fail_campaign_run.assert_awaited_once_with(1, 2, error)
+    repository.finish_campaign_run.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_webhook_throttle_circuit_stops_before_next_send(tmp_path) -> None:
+    repository = AsyncMock()
+    repository.campaign_status.return_value = "throttled"
+    waba = AsyncMock()
+    scheduler = CampaignScheduler(repository, waba, str(tmp_path))
+
+    await scheduler._deliver(
+        {
+            "campaign": {"id": 1, "parameter_mapping": [], "throttle_seconds": 0},
+            "run": {"id": 2},
+            "template": {"name": "welcome", "language": "en_US"},
+            "deliveries": [
+                {
+                    "delivery_id": 3,
+                    "contact_id": 4,
+                    "phone": "919876543210",
+                    "variables": {},
+                }
+            ],
+        }
+    )
+
+    waba.send_template.assert_not_awaited()
+    repository.fail_campaign_run.assert_awaited_once()
 
 
 @pytest.mark.asyncio

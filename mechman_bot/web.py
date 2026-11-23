@@ -36,6 +36,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     database = Database(settings)
     repository = CRMRepository(database)
     waba = WABAClient(settings)
+    waba.set_throttle_hooks(repository.trip_waba_throttle, repository.waba_throttled)
     dm_flow_engine = DMFlowEngine(repository, waba)
     dm_flow_scheduler = DMFlowScheduler(repository, dm_flow_engine)
     processor = WebhookProcessor(settings, repository, waba, dm_flow_engine)

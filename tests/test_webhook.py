@@ -13,8 +13,10 @@ class FakeRepository:
         self.messages = []
         self.state = None
 
-    async def update_message_status(self, message_id, status, error=None):
-        self.messages.append(("status", message_id, status, error))
+    async def update_message_status(
+        self, message_id, status, error=None, error_code=None, error_subcode=None
+    ):
+        self.messages.append(("status", message_id, status, error, error_code, error_subcode))
 
     async def upsert_conversation(self, phone, display_name):
         return {"id": 1, "phone": phone, "bot_state": {}, "is_taken_over": self.taken_over}
@@ -144,6 +146,8 @@ async def test_delivery_failure_preserves_meta_error_detail() -> None:
                                         "status": "failed",
                                         "errors": [
                                             {
+                                                "code": 131048,
+                                                "error_subcode": 2494010,
                                                 "title": "Delivery failed",
                                                 "error_data": {"details": "Recipient is not valid"},
                                             }
@@ -158,5 +162,12 @@ async def test_delivery_failure_preserves_meta_error_detail() -> None:
         }
     )
     assert repository.messages == [
-        ("status", "wamid.failed", "failed", "Recipient is not valid")
+        (
+            "status",
+            "wamid.failed",
+            "failed",
+            "Recipient is not valid",
+            131048,
+            2494010,
+        )
     ]

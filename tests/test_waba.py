@@ -6,7 +6,7 @@ import httpx
 import pytest
 
 from mechman_bot.config import Settings
-from mechman_bot.waba import WABAClient
+from mechman_bot.waba import WABAClient, WABAError
 
 
 def settings(**overrides) -> Settings:
@@ -37,6 +37,103 @@ def test_webhook_signature_validation() -> None:
     client = WABAClient(settings())
     assert client.validate_signature(body, f"sha256={signature}")
     assert not client.validate_signature(body, "sha256=invalid")
+
+
+def test_webhook_signature_fails_closed_without_app_secret() -> None:
+    client = WABAClient(settings(meta_app_secret=""))
+    assert not client.validate_signature(b"{}", None)
+    assert not client.validate_signature(b"{}", "sha256=anything")
+
+
+def test_http_429_is_always_classified_as_throttle() -> None:
+    assert WABAError("rate limited", http_status=429).is_throttle
+
+
+def test_web_service_rejects_disabled_dashboard_auth() -> None:
+    with pytest.raises(ValueError, match="DASHBOARD_AUTH_ENABLED"):
+        settings(dashboard_auth_enabled=False).validate_web()
+
+
+@pytest.mark.asyncio
+async def test_account_health_combines_business_limit_and_phone_quality() -> None:
+    client = WABAClient(settings())
+    client._get = AsyncMock(
+        side_effect=[
+            {"status": "ACTIVE", "whatsapp_business_manager_messaging_limit": "TIER_2K"},
+            {
+                "display_phone_number": "+91 99999 99999",
+                "verified_name": "Mechman",
+                "quality_rating": "GREEN",
+                "name_status": "APPROVED",
+                "status": "CONNECTED",
+            },
+        ]
+    )
+
+    result = await client.account_health()
+
+    assert result["messaging_limit_tier"] == "TIER_2K"
+    assert result["quality_rating"] == "GREEN"
+    assert client._get.await_args_list[0].args[0] == client.settings.meta_waba_id
+
+
+@pytest.mark.asyncio
+async def test_meta_throttle_error_is_structured(monkeypatch) -> None:
+    async_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        "mechman_bot.waba.httpx.AsyncClient",
+        lambda **kwargs: async_client(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(
+                    429,
+                    json={
+                        "error": {
+                            "code": 130429,
+                            "message": "Rate limit hit",
+                            "error_data": {"details": "Too many messages in a short period"},
+                        }
+                    },
+                )
+            ),
+            **kwargs,
+        ),
+    )
+    client = WABAClient(settings())
+
+    with pytest.raises(WABAError) as caught:
+        await client._post("phone/messages", {})
+
+    assert caught.value.is_throttle
+    assert caught.value.code == 130429
+    assert "Too many messages" in str(caught.value)
+
+
+@pytest.mark.asyncio
+async def test_all_sender_paths_honor_and_trip_shared_throttle(monkeypatch) -> None:
+    async_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        "mechman_bot.waba.httpx.AsyncClient",
+        lambda **kwargs: async_client(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(
+                    429, json={"error": {"code": 131048, "message": "Sender throttled"}}
+                )
+            ),
+            **kwargs,
+        ),
+    )
+    client = WABAClient(settings())
+    on_throttle = AsyncMock()
+    is_throttled = AsyncMock(return_value=False)
+    client.set_throttle_hooks(on_throttle, is_throttled)
+
+    with pytest.raises(WABAError):
+        await client.send_text("919876543210", "Hello")
+    on_throttle.assert_awaited_once()
+
+    is_throttled.return_value = True
+    with pytest.raises(WABAError, match="cooldown"):
+        await client.send_template("919876543210", "welcome", "en_US")
 
 
 def test_handoff_asset_configuration_is_supported() -> None:
@@ -74,15 +171,17 @@ async def test_media_template_submission_uses_review_sample_handle() -> None:
     client = WABAClient(settings())
     client._post = AsyncMock(return_value={"id": "template-2"})
 
-    await client.submit_template({
-        "name": "product_photo",
-        "language": "en_US",
-        "category": "MARKETING",
-        "header_format": "IMAGE",
-        "header_sample_handle": "4::sample-handle",
-        "body": "See our product range.",
-        "variables": [],
-    })
+    await client.submit_template(
+        {
+            "name": "product_photo",
+            "language": "en_US",
+            "category": "MARKETING",
+            "header_format": "IMAGE",
+            "header_sample_handle": "4::sample-handle",
+            "body": "See our product range.",
+            "variables": [],
+        }
+    )
 
     components = client._post.await_args.args[1]["components"]
     assert components[0] == {

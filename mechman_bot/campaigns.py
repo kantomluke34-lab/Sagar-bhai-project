@@ -102,9 +102,7 @@ def parse_recipient_file(filename: str, content: bytes) -> dict[str, Any]:
         "rows": rows,
         "row_count": len(rows),
         "phone_column": phone_column,
-        "valid_phone_count": sum(
-            bool(normalize_phone(row.get(phone_column, ""))) for row in rows
-        )
+        "valid_phone_count": sum(bool(normalize_phone(row.get(phone_column, ""))) for row in rows)
         if phone_column
         else 0,
     }
@@ -166,17 +164,23 @@ class CampaignScheduler:
                     continue
             except asyncio.CancelledError:
                 if claimed:
-                    await asyncio.shield(self.repository.fail_campaign_run(
-                        claimed["campaign"]["id"], claimed["run"]["id"],
-                        "Campaign interrupted. Check delivery results before retrying.",
-                        pending_status="uncertain",
-                    ))
+                    await asyncio.shield(
+                        self.repository.fail_campaign_run(
+                            claimed["campaign"]["id"],
+                            claimed["run"]["id"],
+                            "Campaign interrupted. Check delivery results before retrying.",
+                            pending_status="uncertain",
+                        )
+                    )
                 raise
             except Exception:
-                LOGGER.exception("campaign_worker_failed", extra={"event": "campaign_worker_failed"})
+                LOGGER.exception(
+                    "campaign_worker_failed", extra={"event": "campaign_worker_failed"}
+                )
                 if claimed:
                     await self.repository.fail_campaign_run(
-                        claimed["campaign"]["id"], claimed["run"]["id"],
+                        claimed["campaign"]["id"],
+                        claimed["run"]["id"],
                         "Campaign interrupted. Check delivery results before retrying.",
                         pending_status="uncertain",
                     )
@@ -192,9 +196,7 @@ class CampaignScheduler:
         asset = claimed.get("asset")
         quick_reply_payloads: list[str] | None = None
         if campaign.get("dm_flow_version_id"):
-            version = await self.repository.get_dm_flow_version(
-                int(campaign["dm_flow_version_id"])
-            )
+            version = await self.repository.get_dm_flow_version(int(campaign["dm_flow_version_id"]))
             if not version:
                 await self.repository.fail_campaign_run(
                     campaign["id"], run["id"], "Published DM flow version is unavailable"
@@ -238,9 +240,18 @@ class CampaignScheduler:
             if state in {"paused", "cancelled"}:
                 await self.repository.interrupt_campaign_run(campaign["id"], run["id"], state)
                 return
+            if state == "throttled":
+                await self.repository.fail_campaign_run(
+                    campaign["id"],
+                    run["id"],
+                    "[meta_throttled] Meta temporarily limited this sender. Sending stopped; retry after 15 minutes.",
+                )
+                return
             send_started = False
             try:
-                if not await self.repository.contact_opted_in(delivery.get("contact_id"), delivery["phone"]):
+                if not await self.repository.contact_opted_in(
+                    delivery.get("contact_id"), delivery["phone"]
+                ):
                     await self.repository.mark_campaign_delivery(
                         delivery["delivery_id"], "failed", error="Contact is no longer opted in"
                     )
@@ -260,17 +271,13 @@ class CampaignScheduler:
                     quick_reply_payloads=quick_reply_payloads,
                 )
                 if not wa_id:
-                    raise ValueError(
-                        "Meta returned no message ID; verify delivery before retrying"
-                    )
+                    raise ValueError("Meta returned no message ID; verify delivery before retrying")
                 await self.repository.mark_campaign_delivery(
                     delivery["delivery_id"], "accepted", wa_message_id=wa_id, parameters=parameters
                 )
                 if self.dm_flow_engine and campaign.get("dm_flow_version_id"):
                     try:
-                        await self.dm_flow_engine.start_for_delivery(
-                            delivery["delivery_id"], wa_id
-                        )
+                        await self.dm_flow_engine.start_for_delivery(delivery["delivery_id"], wa_id)
                     except Exception:
                         LOGGER.exception(
                             "dm_flow_start_failed",
@@ -281,6 +288,19 @@ class CampaignScheduler:
                             },
                         )
             except WABAError as exc:
+                if exc.is_throttle:
+                    throttle_message = (
+                        "[meta_throttled] Meta temporarily limited this sender. "
+                        "Sending stopped to protect account quality; retry failed recipients after 15 minutes."
+                    )
+                    await self.repository.mark_campaign_delivery(
+                        delivery["delivery_id"], "failed", error=throttle_message
+                    )
+                    await self.repository.trip_waba_throttle(throttle_message)
+                    await self.repository.fail_campaign_run(
+                        campaign["id"], run["id"], throttle_message
+                    )
+                    return
                 await self.repository.mark_campaign_delivery(
                     delivery["delivery_id"], "failed", error=str(exc)[:2000]
                 )

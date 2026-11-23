@@ -94,26 +94,64 @@ def test_postgres_auth_booking_and_calendar_api(tmp_path) -> None:
         assert booking.status_code == 201, booking.text
         duplicate_booking = client.post(
             "/api/public/meetings",
-            json={"name": "Other Contact", "phone": "919999999992", "email": "other@example.com",
-                  "meeting_date": meeting_day.isoformat(), "start_time": "09:00"},
+            json={
+                "name": "Other Contact",
+                "phone": "919999999992",
+                "email": "other@example.com",
+                "meeting_date": meeting_day.isoformat(),
+                "start_time": "09:00",
+            },
         )
         assert duplicate_booking.status_code == 409
-        concurrent_payload = {"name": "Concurrent Contact", "phone": "919999999993", "email": "concurrent@example.com",
-                              "meeting_date": meeting_day.isoformat(), "start_time": "11:00"}
+        concurrent_payload = {
+            "name": "Concurrent Contact",
+            "phone": "919999999993",
+            "email": "concurrent@example.com",
+            "meeting_date": meeting_day.isoformat(),
+            "start_time": "11:00",
+        }
         with ThreadPoolExecutor(max_workers=2) as executor:
-            statuses = list(executor.map(lambda _: client.post("/api/public/meetings", json=concurrent_payload).status_code, range(2)))
+            statuses = list(
+                executor.map(
+                    lambda _: (
+                        client.post("/api/public/meetings", json=concurrent_payload).status_code
+                    ),
+                    range(2),
+                )
+            )
         assert sorted(statuses) == [201, 409]
         meeting_id = booking.json()["meeting_id"]
-        updated = client.patch(f"/api/meetings/{meeting_id}", headers=headers,
-                               json={"status": "completed", "lead_stage": "qualified"})
+        updated = client.patch(
+            f"/api/meetings/{meeting_id}",
+            headers=headers,
+            json={"status": "completed", "lead_stage": "qualified"},
+        )
         assert updated.status_code == 200, updated.text
         assert updated.json()["status"] == "completed"
         assert len(updated.json()["history"]) >= 2
         repo = client.app.state.repository
-        client.portal.call(repo.record_notification_failure, {"id": meeting_id, "phone": "919999999991"}, "reminder:60", "Reminder", "Test failure")
+        client.portal.call(
+            repo.record_notification_failure,
+            {"id": meeting_id, "phone": "919999999991"},
+            "reminder:60",
+            "Reminder",
+            "Test failure",
+        )
         deliveries = client.get("/api/settings/notifications/deliveries", headers=headers).json()
-        assert any(row["status"] == "failed" and row["error"] == "Test failure" for row in deliveries)
-        client.portal.call(partial(repo.add_delivery, meeting_id=meeting_id, notification_key="reminder:60", recipient="919999999991", message="Reminder", status="accepted", wa_message_id="wamid.test"))
+        assert any(
+            row["status"] == "failed" and row["error"] == "Test failure" for row in deliveries
+        )
+        client.portal.call(
+            partial(
+                repo.add_delivery,
+                meeting_id=meeting_id,
+                notification_key="reminder:60",
+                recipient="919999999991",
+                message="Reminder",
+                status="accepted",
+                wa_message_id="wamid.test",
+            )
+        )
         deliveries = client.get("/api/settings/notifications/deliveries", headers=headers).json()
         assert any(row["status"] == "accepted" and row["error"] is None for row in deliveries)
 
@@ -130,25 +168,52 @@ def test_postgres_auth_booking_and_calendar_api(tmp_path) -> None:
         assert paged.status_code == 200
         assert len(paged.json()["items"]) == 1
         assert paged.json()["total"] >= 1
-        created_contact = client.post("/api/crm/contacts", headers=headers, json={
-            "name": "Manual Contact", "phone": "9876543200", "city": "Vadodara",
-        })
+        created_contact = client.post(
+            "/api/crm/contacts",
+            headers=headers,
+            json={
+                "name": "Manual Contact",
+                "phone": "9876543200",
+                "city": "Vadodara",
+            },
+        )
         assert created_contact.status_code == 201, created_contact.text
         assert created_contact.json()["phone"] == "919876543200"
-        edited_contact = client.put(f"/api/crm/contacts/{created_contact.json()['id']}", headers=headers, json={
-            "name": "Manual Contact", "phone": "919876543200", "company": "Example Ltd", "lead_stage": "proposal",
-        })
+        edited_contact = client.put(
+            f"/api/crm/contacts/{created_contact.json()['id']}",
+            headers=headers,
+            json={
+                "name": "Manual Contact",
+                "phone": "919876543200",
+                "company": "Example Ltd",
+                "lead_stage": "proposal",
+            },
+        )
         assert edited_contact.status_code == 200, edited_contact.text
         assert edited_contact.json()["lead_stage"] == "proposal"
-        complete_lead = client.put(f"/api/crm/contacts/{created_contact.json()['id']}", headers=headers, json={
-            "name": "Manual Contact", "phone": "919876543200", "company": "Example Ltd", "lead_stage": "proposal", "lead_status": "completed",
-        })
+        complete_lead = client.put(
+            f"/api/crm/contacts/{created_contact.json()['id']}",
+            headers=headers,
+            json={
+                "name": "Manual Contact",
+                "phone": "919876543200",
+                "company": "Example Ltd",
+                "lead_stage": "proposal",
+                "lead_status": "completed",
+            },
+        )
         assert complete_lead.status_code == 200, complete_lead.text
         assert complete_lead.json()["lead_status"] == "completed"
-        imported = client.post("/api/crm/contacts/import", headers=headers, json={"rows": [
-            {"name": "Duplicate Contact", "phone": "9876543200"},
-            {"name": "Imported Contact", "phone": "9876543201"},
-        ]})
+        imported = client.post(
+            "/api/crm/contacts/import",
+            headers=headers,
+            json={
+                "rows": [
+                    {"name": "Duplicate Contact", "phone": "9876543200"},
+                    {"name": "Imported Contact", "phone": "9876543201"},
+                ]
+            },
+        )
         assert imported.status_code == 200, imported.text
         assert imported.json() == {"added": 1, "duplicates": 1}
         consent = client.put(
@@ -200,30 +265,61 @@ def test_postgres_auth_booking_and_calendar_api(tmp_path) -> None:
             for row in client.get("/api/templates", headers=headers).json()
             if row["name"] == "integration_campaign"
         )
-        audience_campaign = client.post("/api/campaigns", headers=headers, json={
-            "name": "Audience snapshot", "template_id": template["id"], "source_type": "list",
-            "list_id": audience.json()["id"], "scheduled_at": (datetime.now(UTC) + timedelta(minutes=5)).isoformat(),
+        audience_payload = {
+            "name": "Audience snapshot",
+            "template_id": template["id"],
+            "source_type": "list",
+            "list_id": audience.json()["id"],
+            "scheduled_at": (datetime.now(UTC) + timedelta(minutes=5)).isoformat(),
             "parameter_mapping": ["name"],
-        })
+        }
+        idempotent_headers = {**headers, "Idempotency-Key": "integration-audience-campaign-1"}
+        audience_campaign = client.post(
+            "/api/campaigns", headers=idempotent_headers, json=audience_payload
+        )
         assert audience_campaign.status_code == 201, audience_campaign.text
-        snapshot = client.get(f"/api/campaigns/{audience_campaign.json()['id']}", headers=headers).json()
+        duplicate_campaign = client.post(
+            "/api/campaigns", headers=idempotent_headers, json=audience_payload
+        )
+        assert duplicate_campaign.status_code == 201, duplicate_campaign.text
+        assert duplicate_campaign.json()["id"] == audience_campaign.json()["id"]
+        snapshot = client.get(
+            f"/api/campaigns/{audience_campaign.json()['id']}", headers=headers
+        ).json()
         assert len(snapshot["recipients"]) == 1
         assert snapshot["recipients"][0]["variables"]["name"] == "Integration Contact"
-        client.put(f"/api/crm/contact-consent/{contact['id']}", headers=headers,
-                   json={"status": "opted_out"})
-        refused = client.post("/api/campaigns", headers=headers, json={
-            "name": "Opt out protection", "template_id": template["id"], "source_type": "paste",
-            "recipients": [{"phone": contact["phone"], "variables": {"name": "Contact"}}],
-            "consent_confirmed": True, "consent_source": "test", "consent_captured_at": datetime.now(UTC).isoformat(),
-            "consent_evidence": "integration test evidence",
-            "scheduled_at": (datetime.now(UTC) + timedelta(minutes=5)).isoformat(), "parameter_mapping": ["name"],
-        })
+        client.put(
+            f"/api/crm/contact-consent/{contact['id']}",
+            headers=headers,
+            json={"status": "opted_out"},
+        )
+        refused = client.post(
+            "/api/campaigns",
+            headers={**headers, "Idempotency-Key": "integration-optout-campaign-1"},
+            json={
+                "name": "Opt out protection",
+                "template_id": template["id"],
+                "source_type": "paste",
+                "recipients": [{"phone": contact["phone"], "variables": {"name": "Contact"}}],
+                "consent_confirmed": True,
+                "consent_source": "test",
+                "consent_captured_at": datetime.now(UTC).isoformat(),
+                "consent_evidence": "integration test evidence",
+                "scheduled_at": (datetime.now(UTC) + timedelta(minutes=5)).isoformat(),
+                "parameter_mapping": ["name"],
+            },
+        )
         assert refused.status_code == 422, refused.text
-        assert client.get(f"/api/crm/contacts/{contact['id']}", headers=headers).json()["consent_status"] == "opted_out"
+        assert (
+            client.get(f"/api/crm/contacts/{contact['id']}", headers=headers).json()[
+                "consent_status"
+            ]
+            == "opted_out"
+        )
         client.app.state.waba.send_template = AsyncMock(return_value="wamid.campaign.integration")
         campaign = client.post(
             "/api/campaigns",
-            headers=headers,
+            headers={**headers, "Idempotency-Key": "integration-waba-campaign-1"},
             json={
                 "name": "Integration WABA campaign",
                 "template_id": template["id"],
@@ -249,9 +345,7 @@ def test_postgres_auth_booking_and_calendar_api(tmp_path) -> None:
         campaign_id = campaign.json()["id"]
         campaign_detail = None
         for _ in range(15):
-            campaign_detail = client.get(
-                f"/api/campaigns/{campaign_id}", headers=headers
-            ).json()
+            campaign_detail = client.get(f"/api/campaigns/{campaign_id}", headers=headers).json()
             if campaign_detail["status"] == "completed":
                 break
             time.sleep(0.5)
@@ -260,6 +354,22 @@ def test_postgres_auth_booking_and_calendar_api(tmp_path) -> None:
         assert campaign_detail["sent_count"] == 1
         assert campaign_detail["deliveries"][0]["status"] == "accepted"
         client.app.state.waba.send_template.assert_awaited_once()
+        client.portal.call(repo.update_message_status, "wamid.campaign.integration", "read")
+        client.portal.call(repo.update_message_status, "wamid.campaign.integration", "delivered")
+        monotonic_detail = client.get(f"/api/campaigns/{campaign_id}", headers=headers).json()
+        assert monotonic_detail["deliveries"][0]["status"] == "read"
+        archived = client.delete(
+            f"/api/campaigns/{campaign_id}",
+            headers=headers,
+            params={"confirm_name": "Integration WABA campaign"},
+        )
+        assert archived.status_code == 200, archived.text
+        assert not any(
+            row["id"] == campaign_id for row in client.get("/api/campaigns", headers=headers).json()
+        )
+        archived_detail = client.get(f"/api/campaigns/{campaign_id}", headers=headers).json()
+        assert archived_detail["archived_at"]
+        assert any(event["action"] == "archive" for event in archived_detail["events"])
 
         webhook_payload = {
             "entry": [
@@ -297,9 +407,7 @@ def test_postgres_auth_booking_and_calendar_api(tmp_path) -> None:
         )
         assert webhook.status_code == 200
         conversations = client.get("/api/conversations", headers=headers)
-        conversation = next(
-            row for row in conversations.json() if row["phone"] == "919888888888"
-        )
+        conversation = next(row for row in conversations.json() if row["phone"] == "919888888888")
         takeover = client.post(
             f"/api/conversations/{conversation['id']}/take-over", headers=headers
         )

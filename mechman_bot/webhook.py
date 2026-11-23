@@ -6,12 +6,12 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, Response
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 
 from .cam_assistant import respond
 from .config import Settings
 from .repository import CRMRepository
-from .waba import WABAClient
+from .waba import WABAClient, WABAError
 
 LOGGER = logging.getLogger(__name__)
 
@@ -86,7 +86,13 @@ class WebhookProcessor:
                 detail = first_error.get("error_data", {}).get("details")
                 error = detail or first_error.get("message") or first_error.get("title")
                 await self.repository.update_message_status(
-                    str(status["id"]), str(status["status"]), str(error) if error else None
+                    str(status["id"]),
+                    str(status["status"]),
+                    str(error) if error else None,
+                    int(first_error["code"]) if first_error.get("code") is not None else None,
+                    int(first_error["error_subcode"])
+                    if first_error.get("error_subcode") is not None
+                    else None,
                 )
 
     async def _process_messages(self, value: dict[str, Any]) -> None:
@@ -132,15 +138,33 @@ class WebhookProcessor:
             )
             await self.repository.save_bot_state(conversation["id"], reply.state)
             for outbound in reply.messages:
-                wa_id = await self.waba.send_text(phone, outbound)
-                await self.repository.add_message(
-                    conversation["id"],
-                    direction="outbound",
-                    body=outbound,
-                    sender="bot",
-                    wa_message_id=wa_id,
-                    status="accepted",
-                )
+                try:
+                    wa_id = await self.waba.send_text(phone, outbound)
+                    await self.repository.add_message(
+                        conversation["id"],
+                        direction="outbound",
+                        body=outbound,
+                        sender="bot",
+                        wa_message_id=wa_id,
+                        status="accepted",
+                    )
+                except WABAError as exc:
+                    LOGGER.exception(
+                        "webhook_reply_send_failed",
+                        extra={
+                            "event": "webhook_reply_send_failed",
+                            "conversation_id": conversation["id"],
+                        },
+                    )
+                    await self.repository.add_message(
+                        conversation["id"],
+                        direction="outbound",
+                        body=outbound,
+                        sender="bot",
+                        wa_message_id=None,
+                        status="failed",
+                        metadata={"error": str(exc)[:500]},
+                    )
 
 
 def build_webhook_router(
@@ -161,14 +185,14 @@ def build_webhook_router(
         return Response(content=challenge, media_type="text/plain")
 
     @router.post("")
-    async def receive_webhook(
-        request: Request, background_tasks: BackgroundTasks
-    ) -> dict[str, str]:
+    async def receive_webhook(request: Request) -> dict[str, str]:
         body = await request.body()
         if not waba.validate_signature(body, request.headers.get("X-Hub-Signature-256")):
             raise HTTPException(status_code=401, detail="Invalid webhook signature")
         payload = await request.json()
-        background_tasks.add_task(processor.process_safely, payload)
+        # Complete idempotent persistence before acknowledging. If storage or
+        # processing fails, FastAPI returns 5xx and Meta can retry the event.
+        await processor.process(payload)
         return {"status": "accepted"}
 
     return router

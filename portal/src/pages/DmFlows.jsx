@@ -35,6 +35,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import api from '../api'
 import { PageTitle, Status } from './Dashboard'
+import ConfirmDialog from '../components/ConfirmDialog'
 
 const nodeCatalog = [
   ['reply_router', 'Reply router', MessageSquareReply],
@@ -154,6 +155,7 @@ export default function DmFlows() {
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [savedSnapshot, setSavedSnapshot] = useState('')
+  const [archiveConfirm, setArchiveConfirm] = useState(false)
 
   const selected = nodes.find((node) => node.id === selectedId)
   const executions = draft?.executions || []
@@ -281,34 +283,34 @@ export default function DmFlows() {
 
   async function archive() {
     if (!draft?.id) return
-    if (!window.confirm('Archive this DM flow? Scheduled campaigns keep their pinned version.')) return
     setBusy(true); setError('')
-    try { await api.post(`/api/dm-flows/${draft.id}/archive`, { expected_version: draft.draft_version }); setDraft(null); await load(); setNotice('DM flow archived.') }
-    catch (requestError) { setError(requestError.response?.data?.detail || 'DM flow could not be archived.') }
+    try { await api.post(`/api/dm-flows/${draft.id}/archive`, { expected_version: draft.draft_version }); setArchiveConfirm(false); setDraft(null); await load(); setNotice('DM flow archived.') }
+    catch (requestError) {
+      const message = requestError.response?.data?.detail || 'DM flow could not be archived.'
+      setError(message)
+      throw new Error(message)
+    }
     finally { setBusy(false) }
   }
 
-  if (draft) return <div className="dm-flow-workspace">
+  if (draft) return <><div className="dm-flow-workspace">
     <header className="flow-toolbar">
       <button className="icon-button" aria-label="Close editor" onClick={closeEditor}><X /></button>
       <div className="flow-title-fields"><input aria-label="Flow name" required minLength="2" value={draft.name} maxLength="160" onChange={(event) => setDraft({ ...draft, name: event.target.value })} /><input aria-label="Flow description" value={draft.description || ''} maxLength="1000" placeholder="What this flow does" onChange={(event) => setDraft({ ...draft, description: event.target.value })} /></div>
-      <Status value={draft.status} />
-      {hasUnsavedChanges && <span className="flow-unsaved" role="status">Unsaved changes</span>}
-      {draft.id && <button className="secondary-button" disabled={busy} onClick={archive}><Archive size={15} />Archive</button>}
-      <button className="secondary-button" disabled={busy} onClick={save}><Save size={15} />Save draft</button>
-      <button className="primary-button" disabled={busy} onClick={publish}><CheckCircle2 size={15} />Publish</button>
+      <div className="flow-toolbar-state"><Status value={draft.status} />{hasUnsavedChanges && <span className="flow-unsaved" role="status">Unsaved changes</span>}</div>
+      <div className="flow-toolbar-actions">{draft.id && <button className="secondary-button" disabled={busy} onClick={() => setArchiveConfirm(true)}><Archive size={15} />Archive</button>}<button className="secondary-button" disabled={busy} onClick={save}><Save size={15} />Save draft</button><button className="primary-button" disabled={busy} onClick={publish}><CheckCircle2 size={15} />Publish</button></div>
     </header>
-    {error && <div className="alert error flow-alert">{error}</div>}{notice && <div className="alert success flow-alert">{notice}</div>}
+    {error && <div className="alert error flow-alert" role="alert">{error}</div>}{notice && <div className="alert success flow-alert" role="status">{notice}</div>}
     <div className="flow-builder">
       <aside className="flow-palette"><span className="eyebrow">FLOW COMPONENTS</span><p>Add a step, then connect its branch handle to the next step.</p>{nodeCatalog.map(([type, label, Icon]) => <button key={type} onClick={() => addNode(type)}><Icon size={16} /><span>{label}</span><Plus size={13} /></button>)}</aside>
       <main className="flow-canvas"><ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onConnect={onConnect} onNodeClick={(_, node) => setSelectedId(node.id)} onPaneClick={() => setSelectedId(null)} fitView><Background gap={18} size={1} /><MiniMap pannable zoomable /><Controls /></ReactFlow></main>
       <aside className="flow-inspector">{selected ? <NodeInspector node={selected} change={changeConfig} remove={removeSelected} /> : <><span className="eyebrow">STEP SETTINGS</span><div className="empty compact"><MousePointerClick size={24} /><p>Select a step to edit its message, choices, condition, or timeout.</p></div>{draft.id && <ExecutionSummary executions={executions} />}</>}</aside>
     </div>
-  </div>
+  </div><ConfirmDialog open={archiveConfirm} title="Archive this DM flow?" description="It will no longer appear when creating a campaign. Existing campaigns keep their pinned, immutable flow version." confirmLabel="Archive flow" busy={busy} onOpenChange={(open) => { if (!busy) setArchiveConfirm(open) }} onConfirm={archive} /></>
 
   return <>
     <PageTitle kicker="WHATSAPP AUTOMATION" title="DM Flows" subtitle="Build campaign-specific reply journeys that run before the general CAM assistant." action={<button className="primary-button" onClick={startNew}><Plus size={16} />New DM Flow</button>} />
-    {error && <div className="alert error">{error}</div>}{notice && <div className="alert success">{notice}</div>}
+    {error && <div className="alert error" role="alert">{error}</div>}{notice && <div className="alert success" role="status">{notice}</div>}
     {loading ? <section className="panel empty"><Loader2 className="spin" />Loading DM flows…</section> : flows.length ? <section className="flow-list">{flows.map((flow) => <article key={flow.id} className="flow-card"><div className="flow-card-icon"><Bot /></div><div><span className="eyebrow">{flow.published_version ? `VERSION ${flow.published_version.version}` : 'DRAFT'}</span><h2>{flow.name}</h2><p>{flow.description || 'Campaign-specific WhatsApp reply flow.'}</p><small>Updated {new Date(flow.updated_at).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}</small></div><Status value={flow.status} /><div className="flow-card-actions"><button className="secondary-button compact" onClick={() => duplicate(flow)}><Copy size={14} />Duplicate</button><button className="primary-button compact" onClick={() => open(flow)}>Open flow</button></div></article>)}</section> : <section className="panel empty"><Bot size={32} /><h2>No DM flows yet</h2><p>Create a flow, connect each branch, then publish it for campaign use.</p><button className="primary-button" onClick={startNew}><Plus size={16} />Create first flow</button></section>}
   </>
 }

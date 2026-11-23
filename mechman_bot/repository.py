@@ -177,7 +177,11 @@ class CRMRepository:
                         Contact.name.ilike(pattern),
                         Contact.phone.ilike(pattern),
                         Contact.company.ilike(pattern),
-                        select(Message.id).where(Message.conversation_id == Conversation.id, Message.body.ilike(pattern)).exists(),
+                        select(Message.id)
+                        .where(
+                            Message.conversation_id == Conversation.id, Message.body.ilike(pattern)
+                        )
+                        .exists(),
                     )
                 )
             rows = (await session.scalars(statement)).all()
@@ -243,7 +247,9 @@ class CRMRepository:
             await session.refresh(message)
             return as_dict(message)
 
-    async def list_messages(self, conversation_id: int, limit: int = 200, offset: int = 0) -> list[dict[str, Any]]:
+    async def list_messages(
+        self, conversation_id: int, limit: int = 200, offset: int = 0
+    ) -> list[dict[str, Any]]:
         async with self.database.session_factory() as session:
             rows = (
                 await session.scalars(
@@ -267,20 +273,39 @@ class CRMRepository:
             return bool(last_inbound and last_inbound >= datetime.now(UTC) - timedelta(hours=24))
 
     async def update_message_status(
-        self, wa_message_id: str, status: str, error: str | None = None
+        self,
+        wa_message_id: str,
+        status: str,
+        error: str | None = None,
+        error_code: int | None = None,
+        error_subcode: int | None = None,
     ) -> None:
+        ranks = {"pending": 0, "accepted": 1, "sent": 2, "delivered": 3, "read": 4}
+        throttle_codes = {4, 17, 32, 613, 80008, 130429, 131048}
+
+        def should_advance(current: str, incoming: str) -> bool:
+            if current in {"read", "failed"}:
+                return False
+            if incoming == "failed":
+                return ranks.get(current, 0) < ranks["delivered"]
+            return ranks.get(incoming, -1) >= ranks.get(current, 0)
+
         async with self.database.session_factory() as session:
+            now = datetime.now(UTC)
             row = await session.scalar(
-                select(Message).where(Message.wa_message_id == wa_message_id)
+                select(Message).where(Message.wa_message_id == wa_message_id).with_for_update()
             )
-            if row:
+            if row and should_advance(row.status, status):
                 row.status = status
             delivery = await session.scalar(
-                select(CampaignDelivery).where(CampaignDelivery.wa_message_id == wa_message_id)
+                select(CampaignDelivery)
+                .where(CampaignDelivery.wa_message_id == wa_message_id)
+                .with_for_update()
             )
-            if delivery:
+            if delivery and should_advance(delivery.status, status):
                 delivery.status = status
-                now = datetime.now(UTC)
+                delivery.meta_error_code = error_code
+                delivery.meta_error_subcode = error_subcode
                 if status == "delivered":
                     delivery.delivered_at = now
                 elif status == "read":
@@ -289,23 +314,77 @@ class CRMRepository:
                     delivery.error = error or "Meta reported delivery failure"
                 run = await session.get(CampaignRun, delivery.run_id)
                 if run:
+                    if status == "failed" and error_code in throttle_codes:
+                        campaign = await session.get(
+                            Campaign, run.campaign_id, with_for_update=True
+                        )
+                        if campaign:
+                            campaign.throttled_until = now + timedelta(minutes=15)
+                            campaign.throttle_reason = (
+                                error or "Meta temporarily limited this sender"
+                            )
                     await self._refresh_campaign_counts(session, run.campaign_id)
-            if row or delivery:
+            if status == "failed" and error_code in throttle_codes:
+                await self._set_waba_throttle(
+                    session,
+                    error or "Meta temporarily limited this sender",
+                    now + timedelta(minutes=15),
+                )
+            if row or delivery or (status == "failed" and error_code in throttle_codes):
                 await session.commit()
 
-    async def create_meeting(self, data: dict[str, Any], changed_by: str = "booking_form") -> dict[str, Any]:
+    async def _set_waba_throttle(self, session: Any, reason: str, until: datetime) -> None:
+        setting = await session.get(AppSetting, "waba_throttle", with_for_update=True)
+        value = {"until": until.isoformat(), "reason": reason[:500]}
+        if setting:
+            setting.value = value
+        else:
+            session.add(AppSetting(key="waba_throttle", value=value))
+
+    async def trip_waba_throttle(self, reason: str, minutes: int = 15) -> None:
+        async with self.database.session_factory() as session:
+            await self._set_waba_throttle(
+                session, reason, datetime.now(UTC) + timedelta(minutes=minutes)
+            )
+            await session.commit()
+
+    async def waba_throttled(self) -> bool:
+        async with self.database.session_factory() as session:
+            setting = await session.get(AppSetting, "waba_throttle")
+            if not setting:
+                return False
+            try:
+                return datetime.fromisoformat(str(setting.value.get("until"))) > datetime.now(UTC)
+            except (TypeError, ValueError):
+                return False
+
+    async def create_meeting(
+        self, data: dict[str, Any], changed_by: str = "booking_form"
+    ) -> dict[str, Any]:
         async with self.database.session_factory() as session:
             # Serialize calendar writes so simultaneous requests cannot claim the same slot.
             await session.execute(select(func.pg_advisory_xact_lock(1296384835)))
             if data.get("status", "requested") in {"requested", "confirmed", "scheduled"}:
-                conflict = await session.scalar(select(Meeting.id).where(
-                    Meeting.status.in_(["requested", "confirmed", "scheduled"]),
-                    Meeting.start_at < data["end_at"], Meeting.end_at > data["start_at"],
-                ).limit(1))
+                conflict = await session.scalar(
+                    select(Meeting.id)
+                    .where(
+                        Meeting.status.in_(["requested", "confirmed", "scheduled"]),
+                        Meeting.start_at < data["end_at"],
+                        Meeting.end_at > data["start_at"],
+                    )
+                    .limit(1)
+                )
                 if conflict is not None:
                     raise ValueError("That slot is no longer available")
-            matches = (await session.scalars(select(Contact).where(Contact.phone.in_(phone_aliases(data["phone"])) ))).all()
-            contact = next((item for item in matches if item.phone == data["phone"]), matches[0] if matches else None)
+            matches = (
+                await session.scalars(
+                    select(Contact).where(Contact.phone.in_(phone_aliases(data["phone"])))
+                )
+            ).all()
+            contact = next(
+                (item for item in matches if item.phone == data["phone"]),
+                matches[0] if matches else None,
+            )
             if contact is None:
                 contact = Contact(
                     name=data["name"],
@@ -320,7 +399,9 @@ class CRMRepository:
                 contact.email = data.get("email") or contact.email
             if "lead_stage" in data:
                 contact.lead_stage = data["lead_stage"]
-            conversation = await session.scalar(select(Conversation).where(Conversation.contact_id == contact.id))
+            conversation = await session.scalar(
+                select(Conversation).where(Conversation.contact_id == contact.id)
+            )
             meeting = Meeting(
                 contact_id=contact.id,
                 conversation_id=conversation.id if conversation else None,
@@ -414,11 +495,16 @@ class CRMRepository:
             if start.tzinfo is None or end.tzinfo is None or end <= start:
                 raise ValueError("Choose a valid start and end time with a timezone")
             if status in {"requested", "confirmed", "scheduled"}:
-                conflict = await session.scalar(select(Meeting.id).where(
-                    Meeting.id != meeting_id,
-                    Meeting.status.in_(["requested", "confirmed", "scheduled"]),
-                    Meeting.start_at < end, Meeting.end_at > start,
-                ).limit(1))
+                conflict = await session.scalar(
+                    select(Meeting.id)
+                    .where(
+                        Meeting.id != meeting_id,
+                        Meeting.status.in_(["requested", "confirmed", "scheduled"]),
+                        Meeting.start_at < end,
+                        Meeting.end_at > start,
+                    )
+                    .limit(1)
+                )
                 if conflict is not None:
                     raise ValueError("That slot is no longer available")
             for key, value in values.items():
@@ -444,24 +530,45 @@ class CRMRepository:
         return await self.get_meeting(meeting_id)
 
     async def list_contacts(
-        self, query: str = "", page: int | None = None, page_size: int = 50,
+        self,
+        query: str = "",
+        page: int | None = None,
+        page_size: int = 50,
         consent_status: str | None = None,
     ) -> list[dict[str, Any]] | dict[str, Any]:
         async with self.database.session_factory() as session:
-            activity = select(
-                Meeting.contact_id.label("contact_id"),
-                func.count(Meeting.id).label("meeting_count"),
-                func.max(Meeting.updated_at).label("last_activity"),
-                func.min(case((and_(
-                    Meeting.start_at >= datetime.now(UTC),
-                    Meeting.status.in_(["requested", "confirmed", "scheduled"]),
-                ), Meeting.start_at))).label("next_meeting"),
-            ).group_by(Meeting.contact_id).subquery()
-            statement = (select(Contact, ContactConsent, activity.c.meeting_count,
-                                activity.c.last_activity, activity.c.next_meeting)
+            activity = (
+                select(
+                    Meeting.contact_id.label("contact_id"),
+                    func.count(Meeting.id).label("meeting_count"),
+                    func.max(Meeting.updated_at).label("last_activity"),
+                    func.min(
+                        case(
+                            (
+                                and_(
+                                    Meeting.start_at >= datetime.now(UTC),
+                                    Meeting.status.in_(["requested", "confirmed", "scheduled"]),
+                                ),
+                                Meeting.start_at,
+                            )
+                        )
+                    ).label("next_meeting"),
+                )
+                .group_by(Meeting.contact_id)
+                .subquery()
+            )
+            statement = (
+                select(
+                    Contact,
+                    ContactConsent,
+                    activity.c.meeting_count,
+                    activity.c.last_activity,
+                    activity.c.next_meeting,
+                )
                 .outerjoin(ContactConsent, ContactConsent.contact_id == Contact.id)
                 .outerjoin(activity, activity.c.contact_id == Contact.id)
-                .order_by(Contact.updated_at.desc(), Contact.id.desc()))
+                .order_by(Contact.updated_at.desc(), Contact.id.desc())
+            )
             count_statement = select(func.count(Contact.id))
             if consent_status:
                 statement = statement.where(ContactConsent.status == consent_status)
@@ -470,8 +577,12 @@ class CRMRepository:
                 ).where(ContactConsent.status == consent_status)
             if query:
                 pattern = f"%{query}%"
-                condition = or_(Contact.name.ilike(pattern), Contact.phone.ilike(pattern),
-                                Contact.company.ilike(pattern), Contact.email.ilike(pattern))
+                condition = or_(
+                    Contact.name.ilike(pattern),
+                    Contact.phone.ilike(pattern),
+                    Contact.company.ilike(pattern),
+                    Contact.email.ilike(pattern),
+                )
                 statement = statement.where(condition)
                 count_statement = count_statement.where(condition)
             total = await session.scalar(count_statement) if page is not None else None
@@ -488,23 +599,42 @@ class CRMRepository:
                 item["next_meeting"] = next_meeting
                 item["last_activity"] = last_activity or contact.updated_at
                 results.append(item)
-            return {"items": results, "total": total, "page": page, "page_size": page_size} if page is not None else results
+            return (
+                {"items": results, "total": total, "page": page, "page_size": page_size}
+                if page is not None
+                else results
+            )
 
-    async def save_contact(self, values: dict[str, Any], contact_id: int | None = None) -> dict[str, Any] | None:
+    async def save_contact(
+        self, values: dict[str, Any], contact_id: int | None = None
+    ) -> dict[str, Any] | None:
         async with self.database.session_factory() as session:
             contact = await session.get(Contact, contact_id) if contact_id else Contact()
             if contact is None:
                 return None
-            duplicate = await session.scalar(select(Contact.id).where(
-                Contact.phone.in_(phone_aliases(values["phone"])), Contact.id != (contact_id or 0),
-            ).limit(1))
+            duplicate = await session.scalar(
+                select(Contact.id)
+                .where(
+                    Contact.phone.in_(phone_aliases(values["phone"])),
+                    Contact.id != (contact_id or 0),
+                )
+                .limit(1)
+            )
             if duplicate is not None:
                 raise ValueError("A contact with this phone number already exists")
             if contact_id and values.get("phone") != contact.phone:
-                conversation = await session.scalar(select(Conversation).where(Conversation.contact_id == contact_id))
+                conversation = await session.scalar(
+                    select(Conversation).where(Conversation.contact_id == contact_id)
+                )
                 if conversation:
-                    raise ValueError("This contact has a WhatsApp conversation. Its phone number cannot be changed here.")
-                await session.execute(update(Meeting).where(Meeting.contact_id == contact_id).values(phone=values["phone"]))
+                    raise ValueError(
+                        "This contact has a WhatsApp conversation. Its phone number cannot be changed here."
+                    )
+                await session.execute(
+                    update(Meeting)
+                    .where(Meeting.contact_id == contact_id)
+                    .values(phone=values["phone"])
+                )
             for key, value in values.items():
                 setattr(contact, key, value)
             session.add(contact)
@@ -518,7 +648,11 @@ class CRMRepository:
     async def import_contacts(self, rows: list[dict[str, Any]]) -> dict[str, int]:
         async with self.database.session_factory() as session:
             phones = {alias for row in rows for alias in phone_aliases(row["phone"])}
-            existing = set((await session.scalars(select(Contact.phone).where(Contact.phone.in_(phones)))).all())
+            existing = set(
+                (
+                    await session.scalars(select(Contact.phone).where(Contact.phone.in_(phones)))
+                ).all()
+            )
             added = 0
             for row in rows:
                 if any(alias in existing for alias in phone_aliases(row["phone"])):
@@ -529,7 +663,9 @@ class CRMRepository:
             try:
                 await session.commit()
             except IntegrityError as exc:
-                raise ValueError("A contact was added concurrently; refresh and retry the import") from exc
+                raise ValueError(
+                    "A contact was added concurrently; refresh and retry the import"
+                ) from exc
             return {"added": added, "duplicates": len(rows) - added}
 
     async def get_contact(self, contact_id: int) -> dict[str, Any] | None:
@@ -555,7 +691,11 @@ class CRMRepository:
     async def analytics(self) -> dict[str, Any]:
         async with self.database.session_factory() as session:
             now = datetime.now(UTC)
-            today_start = now.astimezone(ZoneInfo("Asia/Kolkata")).replace(hour=0, minute=0, second=0, microsecond=0).astimezone(UTC)
+            today_start = (
+                now.astimezone(ZoneInfo("Asia/Kolkata"))
+                .replace(hour=0, minute=0, second=0, microsecond=0)
+                .astimezone(UTC)
+            )
             today_end = today_start + timedelta(days=1)
             total = await session.scalar(select(func.count(Meeting.id))) or 0
             upcoming = (
@@ -672,17 +812,29 @@ class CRMRepository:
             statement = pg_insert(NotificationDelivery).values(**values)
             statement = statement.on_conflict_do_update(
                 index_elements=["meeting_id", "notification_key"],
-                set_={"status": statement.excluded.status, "message": statement.excluded.message,
-                      "wa_message_id": statement.excluded.wa_message_id, "error": statement.excluded.error,
-                      "sent_at": func.now()},
+                set_={
+                    "status": statement.excluded.status,
+                    "message": statement.excluded.message,
+                    "wa_message_id": statement.excluded.wa_message_id,
+                    "error": statement.excluded.error,
+                    "sent_at": func.now(),
+                },
                 where=NotificationDelivery.status == "failed",
             )
             await session.execute(statement)
             await session.commit()
 
-    async def record_notification_failure(self, meeting: dict[str, Any], key: str, message: str, error: str) -> None:
-        await self.add_delivery(meeting_id=meeting["id"], notification_key=key, recipient=meeting["phone"],
-                                message=message, status="failed", error=error[:2000])
+    async def record_notification_failure(
+        self, meeting: dict[str, Any], key: str, message: str, error: str
+    ) -> None:
+        await self.add_delivery(
+            meeting_id=meeting["id"],
+            notification_key=key,
+            recipient=meeting["phone"],
+            message=message,
+            status="failed",
+            error=error[:2000],
+        )
 
     async def notification_candidates(self, start: datetime, end: datetime) -> list[dict[str, Any]]:
         async with self.database.session_factory() as session:
@@ -726,6 +878,71 @@ class CRMRepository:
             row = await session.get(MessageTemplate, template_id)
             if not row:
                 return None
+            for key, value in values.items():
+                if hasattr(row, key):
+                    setattr(row, key, value)
+            await session.commit()
+            await session.refresh(row)
+            return as_dict(row)
+
+    async def begin_template_submission(self, template_id: int) -> dict[str, Any] | None:
+        """Claim one submission attempt so concurrent requests cannot call Meta twice."""
+        async with self.database.session_factory() as session:
+            row = await session.get(MessageTemplate, template_id, with_for_update=True)
+            if not row:
+                return None
+            if row.status not in {"DRAFT", "REJECTED", "SUBMISSION_FAILED"}:
+                return {**as_dict(row), "submission_conflict": True}
+            row.status = "SUBMITTING"
+            row.rejection_reason = None
+            await session.commit()
+            await session.refresh(row)
+            return as_dict(row)
+
+    async def update_template_draft(
+        self, template_id: int, values: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        async with self.database.session_factory() as session:
+            row = await session.get(MessageTemplate, template_id, with_for_update=True)
+            if not row:
+                return None
+            if row.status not in {"DRAFT", "REJECTED", "SUBMISSION_FAILED"}:
+                raise ValueError(
+                    "Approved or submitted templates cannot be edited; duplicate it instead"
+                )
+            for key, value in values.items():
+                if hasattr(row, key):
+                    setattr(row, key, value)
+            await session.commit()
+            await session.refresh(row)
+            return as_dict(row)
+
+    async def finish_template_submission(
+        self, template_id: int, values: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        async with self.database.session_factory() as session:
+            row = await session.get(MessageTemplate, template_id, with_for_update=True)
+            if not row:
+                return None
+            # A concurrent Meta sync may already have produced a stronger result.
+            if row.status != "SUBMITTING":
+                return as_dict(row)
+            for key, value in values.items():
+                if hasattr(row, key):
+                    setattr(row, key, value)
+            await session.commit()
+            await session.refresh(row)
+            return as_dict(row)
+
+    async def recover_template_submission(
+        self, template_id: int, expected_status: str, values: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        async with self.database.session_factory() as session:
+            row = await session.get(MessageTemplate, template_id, with_for_update=True)
+            if not row:
+                return None
+            if row.status != expected_status:
+                return as_dict(row)
             for key, value in values.items():
                 if hasattr(row, key):
                     setattr(row, key, value)
@@ -783,8 +1000,8 @@ class CRMRepository:
 
     async def list_dm_flows(self, published_only: bool = False) -> list[dict[str, Any]]:
         async with self.database.session_factory() as session:
-            statement = select(DMFlow).where(DMFlow.archived.is_(False)).order_by(
-                DMFlow.updated_at.desc()
+            statement = (
+                select(DMFlow).where(DMFlow.archived.is_(False)).order_by(DMFlow.updated_at.desc())
             )
             if published_only:
                 statement = statement.where(DMFlow.status == "published")
@@ -922,9 +1139,7 @@ class CRMRepository:
             await session.refresh(row)
             return as_dict(row)
 
-    async def archive_dm_flow(
-        self, flow_id: int, expected_version: int
-    ) -> dict[str, Any] | None:
+    async def archive_dm_flow(self, flow_id: int, expected_version: int) -> dict[str, Any] | None:
         async with self.database.session_factory() as session:
             row = await session.get(DMFlow, flow_id, with_for_update=True)
             if not row:
@@ -965,13 +1180,15 @@ class CRMRepository:
             for row in rows:
                 item = as_dict(row)
                 item["recipient_count"] = len(await self._resolve_list_rows(session, row))
-                members = (await session.execute(
-                    select(Contact.id, Contact.name, Contact.phone, ContactConsent.status)
-                    .join(RecipientListMember, RecipientListMember.contact_id == Contact.id)
-                    .outerjoin(ContactConsent, ContactConsent.contact_id == Contact.id)
-                    .where(RecipientListMember.list_id == row.id)
-                    .order_by(Contact.name)
-                )).all()
+                members = (
+                    await session.execute(
+                        select(Contact.id, Contact.name, Contact.phone, ContactConsent.status)
+                        .join(RecipientListMember, RecipientListMember.contact_id == Contact.id)
+                        .outerjoin(ContactConsent, ContactConsent.contact_id == Contact.id)
+                        .where(RecipientListMember.list_id == row.id)
+                        .order_by(Contact.name)
+                    )
+                ).all()
                 item["member_ids"] = [contact_id for contact_id, _, _, _ in members]
                 item["unavailable_members"] = [
                     {"id": contact_id, "name": name, "phone": phone}
@@ -988,32 +1205,50 @@ class CRMRepository:
         if not unique_ids:
             return False
         async with self.database.session_factory() as session:
-            eligible_ids = set((await session.scalars(
-                select(ContactConsent.contact_id).where(
-                    ContactConsent.contact_id.in_(unique_ids),
-                    ContactConsent.status == "opted_in",
-                )
-            )).all())
-            if existing_list_id:
-                eligible_ids.update((await session.scalars(
-                    select(RecipientListMember.contact_id).where(
-                        RecipientListMember.list_id == existing_list_id,
-                        RecipientListMember.contact_id.in_(unique_ids),
+            eligible_ids = set(
+                (
+                    await session.scalars(
+                        select(ContactConsent.contact_id).where(
+                            ContactConsent.contact_id.in_(unique_ids),
+                            ContactConsent.status == "opted_in",
+                        )
                     )
-                )).all())
+                ).all()
+            )
+            if existing_list_id:
+                eligible_ids.update(
+                    (
+                        await session.scalars(
+                            select(RecipientListMember.contact_id).where(
+                                RecipientListMember.list_id == existing_list_id,
+                                RecipientListMember.contact_id.in_(unique_ids),
+                            )
+                        )
+                    ).all()
+                )
             return unique_ids.issubset(eligible_ids)
 
     async def freeze_dynamic_recipient_lists(self) -> None:
         """Keep current eligible members when retiring old filter-based audiences."""
         async with self.database.session_factory.begin() as session:
-            rows = (await session.scalars(
-                select(RecipientList).where(RecipientList.list_type == "dynamic").with_for_update()
-            )).all()
+            rows = (
+                await session.scalars(
+                    select(RecipientList)
+                    .where(RecipientList.list_type == "dynamic")
+                    .with_for_update()
+                )
+            ).all()
             for row in rows:
                 members = await self._resolve_list_rows(session, row)
-                existing_ids = set((await session.scalars(
-                    select(RecipientListMember.contact_id).where(RecipientListMember.list_id == row.id)
-                )).all())
+                existing_ids = set(
+                    (
+                        await session.scalars(
+                            select(RecipientListMember.contact_id).where(
+                                RecipientListMember.list_id == row.id
+                            )
+                        )
+                    ).all()
+                )
                 for member in members:
                     if member["id"] not in existing_ids:
                         session.add(RecipientListMember(list_id=row.id, contact_id=member["id"]))
@@ -1102,9 +1337,32 @@ class CRMRepository:
         self, values: dict[str, Any], recipients: list[dict[str, Any]]
     ) -> dict[str, Any]:
         async with self.database.session_factory() as session:
+            key = values.get("idempotency_key")
+            if key:
+                existing = await session.scalar(
+                    select(Campaign).where(Campaign.idempotency_key == key)
+                )
+                if existing:
+                    if existing.request_hash != values.get("request_hash"):
+                        raise ValueError("Idempotency key was already used for another campaign")
+                    return as_dict(existing)
             campaign = Campaign(**values, total_recipients=len(recipients))
             session.add(campaign)
-            await session.flush()
+            try:
+                await session.flush()
+            except IntegrityError as exc:
+                await session.rollback()
+                if key:
+                    existing = await session.scalar(
+                        select(Campaign).where(Campaign.idempotency_key == key)
+                    )
+                    if existing:
+                        if existing.request_hash != values.get("request_hash"):
+                            raise ValueError(
+                                "Idempotency key was already used for another campaign"
+                            ) from exc
+                        return as_dict(existing)
+                raise
             seen: set[str] = set()
             for source in recipients:
                 phone = str(source["phone"])
@@ -1114,7 +1372,9 @@ class CRMRepository:
                 if values["source_type"] == "list":
                     contact = await session.get(Contact, int(source["contact_id"]))
                     if contact is None or contact.phone != phone:
-                        raise ValueError("Audience changed. Review the contacts and schedule again.")
+                        raise ValueError(
+                            "Audience changed. Review the contacts and schedule again."
+                        )
                     membership = await session.scalar(
                         select(RecipientListMember.id).where(
                             RecipientListMember.list_id == values["list_id"],
@@ -1123,28 +1383,45 @@ class CRMRepository:
                     )
                     consent = await session.get(ContactConsent, contact.id)
                     if membership is None or consent is None or consent.status != "opted_in":
-                        raise ValueError("Audience changed. Review the opted-in contacts and schedule again.")
+                        raise ValueError(
+                            "Audience changed. Review the opted-in contacts and schedule again."
+                        )
                     if not consent.source or not consent.captured_at:
-                        raise ValueError("An audience contact has incomplete WhatsApp permission details. Update the contact before scheduling.")
+                        raise ValueError(
+                            "An audience contact has incomplete WhatsApp permission details. Update the contact before scheduling."
+                        )
                     session.add(
                         CampaignRecipient(
                             campaign_id=campaign.id,
                             contact_id=contact.id,
                             phone=phone,
                             name=str(source.get("name") or contact.name),
-                            variables=json.loads(json.dumps(source.get("variables") or {}, default=str)),
+                            variables=json.loads(
+                                json.dumps(source.get("variables") or {}, default=str)
+                            ),
                             consent_source=consent.source,
                             consent_captured_at=consent.captured_at,
-                            consent_evidence=dict(source.get("consent_evidence") or consent.evidence or {}),
+                            consent_evidence=dict(
+                                source.get("consent_evidence") or consent.evidence or {}
+                            ),
                         )
                     )
                     continue
-                matches = (await session.scalars(select(Contact).where(Contact.phone.in_(phone_aliases(phone))))).all()
+                matches = (
+                    await session.scalars(
+                        select(Contact).where(Contact.phone.in_(phone_aliases(phone)))
+                    )
+                ).all()
                 for candidate in matches:
                     prior_consent = await session.get(ContactConsent, candidate.id)
                     if prior_consent and prior_consent.status == "opted_out":
-                        raise ValueError("A recipient has opted out. Remove them before scheduling.")
-                contact = next((item for item in matches if item.phone == phone), matches[0] if matches else None)
+                        raise ValueError(
+                            "A recipient has opted out. Remove them before scheduling."
+                        )
+                contact = next(
+                    (item for item in matches if item.phone == phone),
+                    matches[0] if matches else None,
+                )
                 if contact is None:
                     contact = Contact(
                         name=str(source.get("name") or "WhatsApp contact"),
@@ -1173,7 +1450,9 @@ class CRMRepository:
                         contact_id=contact.id,
                         phone=phone,
                         name=str(source.get("name") or contact.name),
-                        variables=json.loads(json.dumps(source.get("variables") or {}, default=str)),
+                        variables=json.loads(
+                            json.dumps(source.get("variables") or {}, default=str)
+                        ),
                         consent_source=str(source["consent_source"]),
                         consent_captured_at=source["consent_captured_at"],
                         consent_evidence=dict(source.get("consent_evidence") or {}),
@@ -1184,18 +1463,18 @@ class CRMRepository:
             await session.refresh(campaign)
             return as_dict(campaign)
 
-    async def list_campaigns(self) -> list[dict[str, Any]]:
+    async def list_campaigns(self, include_archived: bool = False) -> list[dict[str, Any]]:
         async with self.database.session_factory() as session:
-            rows = (
-                await session.execute(
-                    select(Campaign, MessageTemplate)
-                    .join(MessageTemplate, MessageTemplate.id == Campaign.template_id)
-                    .order_by(Campaign.created_at.desc())
-                )
-            ).all()
+            statement = (
+                select(Campaign, MessageTemplate)
+                .join(MessageTemplate, MessageTemplate.id == Campaign.template_id)
+                .order_by(Campaign.created_at.desc())
+            )
+            if not include_archived:
+                statement = statement.where(Campaign.archived_at.is_(None))
+            rows = (await session.execute(statement)).all()
             return [
-                {**as_dict(campaign), "template_name": template.name}
-                for campaign, template in rows
+                {**as_dict(campaign), "template_name": template.name} for campaign, template in rows
             ]
 
     async def get_campaign(self, campaign_id: int) -> dict[str, Any] | None:
@@ -1249,7 +1528,9 @@ class CRMRepository:
                 deliveries = (
                     await session.execute(
                         select(CampaignDelivery, CampaignRecipient)
-                        .join(CampaignRecipient, CampaignRecipient.id == CampaignDelivery.recipient_id)
+                        .join(
+                            CampaignRecipient, CampaignRecipient.id == CampaignDelivery.recipient_id
+                        )
                         .where(CampaignDelivery.run_id == runs[0].id)
                         .order_by(CampaignDelivery.id)
                     )
@@ -1272,9 +1553,11 @@ class CRMRepository:
         }
         allowed, target = transitions[action]
         async with self.database.session_factory() as session:
-            row = await session.get(Campaign, campaign_id)
+            row = await session.get(Campaign, campaign_id, with_for_update=True)
             if not row:
                 return None
+            if row.archived_at:
+                raise ValueError("Archived campaigns cannot be changed")
             if row.status not in allowed:
                 raise ValueError(f"Campaign cannot {action} from {row.status}")
             old_status = row.status
@@ -1296,27 +1579,57 @@ class CRMRepository:
 
     async def retry_failed_campaign(self, campaign_id: int, created_by: str) -> dict[str, Any]:
         async with self.database.session_factory() as session:
-            original = await session.get(Campaign, campaign_id)
+            original = await session.get(Campaign, campaign_id, with_for_update=True)
             if not original:
                 raise ValueError("Campaign not found")
+            if original.archived_at:
+                raise ValueError("Archived campaigns cannot be retried")
             last_run = await session.scalar(
                 select(CampaignRun)
                 .where(CampaignRun.campaign_id == campaign_id)
                 .order_by(CampaignRun.run_number.desc())
                 .limit(1)
+                .with_for_update()
             )
             if not last_run:
                 raise ValueError("Campaign has not run yet")
+            throttled = await session.scalar(
+                select(CampaignDelivery.id)
+                .where(
+                    CampaignDelivery.run_id == last_run.id,
+                    CampaignDelivery.error.like("[meta_throttled]%"),
+                )
+                .limit(1)
+            )
+            if (
+                throttled
+                and last_run.finished_at
+                and last_run.finished_at > datetime.now(UTC) - timedelta(minutes=15)
+            ):
+                raise ValueError(
+                    "Meta temporarily limited this sender. Wait 15 minutes from the failed run before retrying."
+                )
+            existing_retry = await session.scalar(
+                select(Campaign).where(Campaign.retry_of_run_id == last_run.id)
+            )
+            if existing_retry:
+                return as_dict(existing_retry)
             failed = (
-                await session.execute(
-                    select(CampaignRecipient)
-                    .join(CampaignDelivery, CampaignDelivery.recipient_id == CampaignRecipient.id)
-                    .where(
-                        CampaignDelivery.run_id == last_run.id,
-                        CampaignDelivery.status == "failed",
+                (
+                    await session.execute(
+                        select(CampaignRecipient)
+                        .join(
+                            CampaignDelivery, CampaignDelivery.recipient_id == CampaignRecipient.id
+                        )
+                        .where(
+                            CampaignDelivery.run_id == last_run.id,
+                            CampaignDelivery.status == "failed",
+                        )
                     )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             if not failed:
                 raise ValueError("There are no failed deliveries to retry")
             retry = Campaign(
@@ -1333,6 +1646,7 @@ class CRMRepository:
                 throttle_seconds=original.throttle_seconds,
                 total_recipients=len(failed),
                 created_by=created_by,
+                retry_of_run_id=last_run.id,
             )
             session.add(retry)
             await session.flush()
@@ -1353,8 +1667,64 @@ class CRMRepository:
             await session.refresh(retry)
             return as_dict(retry)
 
+    async def archive_campaign(
+        self, campaign_id: int, confirm_name: str, actor: str
+    ) -> dict[str, Any] | None:
+        async with self.database.session_factory() as session:
+            row = await session.get(Campaign, campaign_id, with_for_update=True)
+            if not row:
+                return None
+            if confirm_name.strip() != row.name:
+                raise ValueError("Campaign name confirmation does not match")
+            if row.archived_at:
+                return as_dict(row)
+            if row.status in {"scheduled", "running", "paused"}:
+                raise ValueError("Cancel this campaign before archiving it")
+            active_execution = await session.scalar(
+                select(DMFlowExecution.id)
+                .where(
+                    DMFlowExecution.campaign_id == campaign_id,
+                    DMFlowExecution.status.in_(
+                        [
+                            "running",
+                            "waiting_reply",
+                            "waiting_delay",
+                            "processing_reply",
+                            "processing_start",
+                            "processing_delay",
+                            "processing_timeout",
+                        ]
+                    ),
+                )
+                .limit(1)
+            )
+            if active_execution:
+                raise ValueError("This campaign still has an active DM flow execution")
+            row.archived_at = datetime.now(UTC)
+            row.archived_by = actor
+            session.add(
+                CampaignEvent(
+                    campaign_id=row.id,
+                    action="archive",
+                    actor=actor,
+                    old_status=row.status,
+                    new_status=row.status,
+                    details={"archived": True},
+                )
+            )
+            await session.commit()
+            await session.refresh(row)
+            return as_dict(row)
+
     async def claim_due_campaign(self) -> dict[str, Any] | None:
         async with self.database.session_factory() as session:
+            throttle = await session.get(AppSetting, "waba_throttle")
+            if throttle:
+                try:
+                    if datetime.fromisoformat(str(throttle.value.get("until"))) > datetime.now(UTC):
+                        return None
+                except (TypeError, ValueError):
+                    pass
             campaign = await session.scalar(
                 select(Campaign)
                 .where(Campaign.status == "scheduled", Campaign.scheduled_at <= datetime.now(UTC))
@@ -1407,27 +1777,48 @@ class CRMRepository:
         # Mark pending items for review instead of automatically resending them.
         cutoff = datetime.now(UTC) - timedelta(minutes=10)
         async with self.database.session_factory() as session:
-            campaigns = (await session.scalars(select(Campaign).where(
-                Campaign.status == "running", Campaign.updated_at < cutoff,
-            ).with_for_update(skip_locked=True))).all()
+            campaigns = (
+                await session.scalars(
+                    select(Campaign)
+                    .where(
+                        Campaign.status == "running",
+                        Campaign.updated_at < cutoff,
+                    )
+                    .with_for_update(skip_locked=True)
+                )
+            ).all()
             for campaign in campaigns:
-                run = await session.scalar(select(CampaignRun).where(
-                    CampaignRun.campaign_id == campaign.id, CampaignRun.status == "running",
-                ).order_by(CampaignRun.run_number.desc()).limit(1))
+                run = await session.scalar(
+                    select(CampaignRun)
+                    .where(
+                        CampaignRun.campaign_id == campaign.id,
+                        CampaignRun.status == "running",
+                    )
+                    .order_by(CampaignRun.run_number.desc())
+                    .limit(1)
+                )
                 campaign.status = "failed"
                 if run:
                     run.status = "failed"
                     run.finished_at = datetime.now(UTC)
-                    await session.execute(update(CampaignDelivery).where(
-                        CampaignDelivery.run_id == run.id, CampaignDelivery.status == "pending",
-                    ).values(status="uncertain", error="Interrupted after work began; verify delivery with Meta before retrying."))
+                    await session.execute(
+                        update(CampaignDelivery)
+                        .where(
+                            CampaignDelivery.run_id == run.id,
+                            CampaignDelivery.status == "pending",
+                        )
+                        .values(
+                            status="uncertain",
+                            error="Interrupted after work began; verify delivery with Meta before retrying.",
+                        )
+                    )
                 await session.flush()
                 await self._refresh_campaign_counts(session, campaign.id)
             await session.commit()
 
     async def _campaign_workload(self, campaign_id: int, run_id: int) -> dict[str, Any]:
         async with self.database.session_factory() as session:
-            campaign = await session.get(Campaign, campaign_id)
+            campaign = await session.get(Campaign, campaign_id, with_for_update=True)
             run = await session.get(CampaignRun, run_id)
             template = await session.get(MessageTemplate, campaign.template_id)
             asset = await session.get(MediaAsset, campaign.asset_id) if campaign.asset_id else None
@@ -1457,7 +1848,21 @@ class CRMRepository:
 
     async def campaign_status(self, campaign_id: int) -> str:
         async with self.database.session_factory() as session:
-            return str(await session.scalar(select(Campaign.status).where(Campaign.id == campaign_id)))
+            campaign = await session.get(Campaign, campaign_id)
+            if not campaign:
+                return "missing"
+            if campaign.status in {"cancelled", "paused"}:
+                return str(campaign.status)
+            throttle = await session.get(AppSetting, "waba_throttle")
+            if throttle:
+                try:
+                    if datetime.fromisoformat(str(throttle.value.get("until"))) > datetime.now(UTC):
+                        return "throttled"
+                except (TypeError, ValueError):
+                    pass
+            if campaign.throttled_until and campaign.throttled_until > datetime.now(UTC):
+                return "throttled"
+            return str(campaign.status)
 
     async def contact_opted_in(self, contact_id: int | None, phone: str) -> bool:
         if contact_id is None:
@@ -1466,9 +1871,17 @@ class CRMRepository:
             consent = await session.get(ContactConsent, contact_id)
             if not consent or consent.status != "opted_in":
                 return False
-            opted_out = await session.scalar(select(Contact.id).join(
-                ContactConsent, ContactConsent.contact_id == Contact.id,
-            ).where(Contact.phone.in_(phone_aliases(phone)), ContactConsent.status == "opted_out").limit(1))
+            opted_out = await session.scalar(
+                select(Contact.id)
+                .join(
+                    ContactConsent,
+                    ContactConsent.contact_id == Contact.id,
+                )
+                .where(
+                    Contact.phone.in_(phone_aliases(phone)), ContactConsent.status == "opted_out"
+                )
+                .limit(1)
+            )
             return opted_out is None
 
     async def mark_campaign_delivery(
@@ -1504,9 +1917,12 @@ class CRMRepository:
         campaign = await session.get(Campaign, campaign_id)
         if not campaign:
             return
-        latest_run = await session.scalar(select(CampaignRun.id).where(
-            CampaignRun.campaign_id == campaign_id
-        ).order_by(CampaignRun.run_number.desc()).limit(1))
+        latest_run = await session.scalar(
+            select(CampaignRun.id)
+            .where(CampaignRun.campaign_id == campaign_id)
+            .order_by(CampaignRun.run_number.desc())
+            .limit(1)
+        )
         statuses = (
             await session.execute(
                 select(CampaignDelivery.status, func.count(CampaignDelivery.id))
@@ -1526,7 +1942,7 @@ class CRMRepository:
 
     async def finish_campaign_run(self, campaign_id: int, run_id: int) -> None:
         async with self.database.session_factory() as session:
-            campaign = await session.get(Campaign, campaign_id)
+            campaign = await session.get(Campaign, campaign_id, with_for_update=True)
             run = await session.get(CampaignRun, run_id)
             if not campaign or not run:
                 return
@@ -1539,7 +1955,21 @@ class CRMRepository:
                     )
                 ).all()
             )
-            run.status = "completed"
+            failed = counts.get("failed", 0)
+            uncertain = counts.get("uncertain", 0)
+            total = sum(counts.values())
+            if uncertain:
+                outcome = "needs_review"
+            elif total and failed == total:
+                outcome = "failed"
+            elif failed:
+                outcome = "completed_with_failures"
+            else:
+                outcome = "completed"
+            interrupted_status = (
+                campaign.status if campaign.status in {"cancelled", "paused"} else None
+            )
+            run.status = interrupted_status or outcome
             run.finished_at = datetime.now(UTC)
             run.sent_count = sum(
                 counts.get(value, 0) for value in ("accepted", "sent", "delivered", "read")
@@ -1547,8 +1977,10 @@ class CRMRepository:
             run.failed_count = counts.get("failed", 0)
             campaign.last_run_at = run.finished_at
             await self._refresh_campaign_counts(session, campaign_id)
-            if campaign.schedule_type == "once":
-                campaign.status = "completed"
+            if interrupted_status:
+                pass
+            elif campaign.schedule_type == "once":
+                campaign.status = outcome
                 campaign.completed_at = run.finished_at
             else:
                 increment = timedelta(days=1 if campaign.schedule_type == "daily" else 7)
@@ -1568,12 +2000,13 @@ class CRMRepository:
         pending_status: str = "failed",
     ) -> None:
         async with self.database.session_factory() as session:
-            campaign = await session.get(Campaign, campaign_id)
+            campaign = await session.get(Campaign, campaign_id, with_for_update=True)
             run = await session.get(CampaignRun, run_id)
-            if campaign:
+            interrupted = bool(campaign and campaign.status in {"cancelled", "paused"})
+            if campaign and not interrupted:
                 campaign.status = "failed"
             if run:
-                run.status = "failed"
+                run.status = campaign.status if interrupted and campaign else "failed"
                 run.finished_at = datetime.now(UTC)
                 await session.execute(
                     update(CampaignDelivery)
@@ -1601,9 +2034,7 @@ class CRMRepository:
             raise ValueError("Meta did not return a message ID for the flow execution")
         async with self.database.session_factory() as session:
             existing = await session.scalar(
-                select(DMFlowExecution).where(
-                    DMFlowExecution.campaign_delivery_id == delivery_id
-                )
+                select(DMFlowExecution).where(DMFlowExecution.campaign_delivery_id == delivery_id)
             )
             if existing:
                 return as_dict(existing)
@@ -1613,11 +2044,14 @@ class CRMRepository:
                 .join(Campaign, Campaign.id == CampaignRun.campaign_id)
                 .join(CampaignRecipient, CampaignRecipient.id == CampaignDelivery.recipient_id)
                 .where(CampaignDelivery.id == delivery_id)
+                .with_for_update(of=Campaign)
             )
             row = record.first()
             if not row:
                 raise ValueError("Campaign delivery was not found")
             delivery, _run, campaign, recipient = row
+            if campaign.archived_at:
+                raise ValueError("Archived campaigns cannot start DM flow executions")
             if not campaign.dm_flow_version_id:
                 return None
             if delivery.status not in {"accepted", "sent", "delivered", "read"}:

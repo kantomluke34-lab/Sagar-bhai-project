@@ -18,7 +18,7 @@ export default function Waba({ embedded = false }) {
   const webhookUrl = `${API_BASE_URL || window.location.origin}/webhook`
 
   async function load() {
-    setLoading(true); setError('')
+    setLoading(true); setError(''); setStatus(null)
     try { const { data } = await api.get('/api/waba/status'); setStatus(data) }
     catch (requestError) { setError(requestError.response?.data?.detail || 'Could not load WABA status.') }
     finally { setLoading(false) }
@@ -30,6 +30,7 @@ export default function Waba({ embedded = false }) {
   const connected = yes(status?.configured) || yes(status?.connected) || yes(connection)
   const phone = first(status?.display_phone_number, status?.phone_number, status?.phone_number_id, status?.verified_name, 'Not reported')
   const quality = first(status?.quality_rating, status?.quality, 'Not reported')
+  const messagingLimit = first(status?.messaging_limit_tier, 'Not reported')
   const appConfigured = first(status?.signature_validation_configured, status?.app_secret_configured, status?.webhook_signature_configured, status?.signature_verification, false)
   const verifyConfigured = first(status?.webhook_verification_configured, status?.verify_token_configured, status?.webhook_verify_token_configured, false)
   return <>
@@ -38,15 +39,17 @@ export default function Waba({ embedded = false }) {
     {error && <div className="alert error">{error}</div>}
     <section className={`waba-hero ${connected ? 'connected' : ''}`}>
       <div className="waba-icon"><Radio /></div>
-      <div><span className="eyebrow">{connected ? 'CONFIGURED' : loading ? 'CHECKING' : 'ACTION REQUIRED'}</span><h2>{loading ? 'Checking configuration…' : connected ? 'WhatsApp credentials are configured.' : 'WhatsApp Business needs attention.'}</h2><p>{phone} · Configuration alone does not verify delivery.</p></div>
+      <div><span className="eyebrow">{connected ? 'CONFIGURED' : loading ? 'CHECKING' : error ? 'STATUS UNAVAILABLE' : 'ACTION REQUIRED'}</span><h2>{loading ? 'Checking configuration…' : error ? 'Live WhatsApp status could not be verified.' : connected ? 'WhatsApp credentials are configured.' : 'WhatsApp Business needs attention.'}</h2><p>{phone} · Configuration alone does not verify delivery.</p></div>
       <span className={`status ${connected ? 'status-completed' : 'status-cancelled'}`}>{connection}</span>
     </section>
-    <div className="health-grid">
+    {!loading && status && <div className="health-grid">
       <HealthItem label="Cloud API configuration" value={connected ? 'Configured' : 'Not configured'} healthy={connected} />
       <HealthItem label="Phone quality" value={quality} healthy={!/red|blocked|unknown|not reported/i.test(String(quality))} />
+      <HealthItem label="24-hour messaging tier" value={String(messagingLimit).replace('TIER_', '').replaceAll('_', ' ')} healthy={!/unknown|not reported|untiered/i.test(String(messagingLimit))} />
       <HealthItem label="App secret" value={yes(appConfigured) ? 'Configured' : 'Check server'} healthy={yes(appConfigured)} />
       <HealthItem label="Webhook verify token" value={yes(verifyConfigured) ? 'Configured' : 'Check server'} healthy={yes(verifyConfigured)} />
-    </div>
+    </div>}
+    {status?.health_error && <div className="alert error" role="status">{status.health_error}. Configuration is present, but live tier and quality could not be verified.</div>}
     <section className="panel webhook-panel">
       <div className="settings-heading"><Webhook /><div><h2>Meta webhook</h2><p>Use this callback in the Meta App dashboard and subscribe to WhatsApp messages.</p></div></div>
       <label>Callback URL<div className="copy-field"><input readOnly value={webhookUrl} /><button className="secondary-button" onClick={copyWebhook}><Copy size={15} />{copied ? 'Copied' : 'Copy'}</button></div></label>

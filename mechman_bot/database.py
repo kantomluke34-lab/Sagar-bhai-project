@@ -216,9 +216,7 @@ class DMFlowVersion(Base):
     __tablename__ = "dm_flow_versions"
     __table_args__ = (UniqueConstraint("flow_id", "version"),)
     id: Mapped[int] = mapped_column(primary_key=True)
-    flow_id: Mapped[int] = mapped_column(
-        ForeignKey("dm_flows.id", ondelete="CASCADE"), index=True
-    )
+    flow_id: Mapped[int] = mapped_column(ForeignKey("dm_flows.id", ondelete="CASCADE"), index=True)
     version: Mapped[int] = mapped_column(Integer)
     graph: Mapped[dict[str, Any]] = mapped_column(JSONB)
     checksum: Mapped[str] = mapped_column(String(64), index=True)
@@ -256,6 +254,15 @@ class Campaign(Base, TimestampMixin):
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_by: Mapped[str] = mapped_column(String(100), default="admin")
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    archived_by: Mapped[str | None] = mapped_column(String(100))
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), unique=True, index=True)
+    request_hash: Mapped[str | None] = mapped_column(String(64))
+    retry_of_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("campaign_runs.id", ondelete="RESTRICT"), unique=True, index=True
+    )
+    throttled_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    throttle_reason: Mapped[str | None] = mapped_column(Text)
 
 
 class CampaignRecipient(Base):
@@ -322,6 +329,8 @@ class CampaignDelivery(Base):
     rendered_parameters: Mapped[list[str]] = mapped_column(JSONB, default=list)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     error: Mapped[str | None] = mapped_column(Text)
+    meta_error_code: Mapped[int | None] = mapped_column(Integer)
+    meta_error_subcode: Mapped[int | None] = mapped_column(Integer)
     accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -420,9 +429,72 @@ class Database:
                     "ADD COLUMN IF NOT EXISTS header_sample_handle VARCHAR(2048)"
                 )
             )
-            await connection.execute(text("ALTER TABLE notification_deliveries ADD COLUMN IF NOT EXISTS error TEXT"))
-            await connection.execute(text("ALTER TABLE contacts ADD COLUMN IF NOT EXISTS lead_status VARCHAR(20) NOT NULL DEFAULT 'open'"))
-            await connection.execute(text("ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS uncertain_count INTEGER NOT NULL DEFAULT 0"))
+            await connection.execute(
+                text("ALTER TABLE notification_deliveries ADD COLUMN IF NOT EXISTS error TEXT")
+            )
+            await connection.execute(
+                text(
+                    "ALTER TABLE contacts ADD COLUMN IF NOT EXISTS lead_status VARCHAR(20) NOT NULL DEFAULT 'open'"
+                )
+            )
+            await connection.execute(
+                text(
+                    "ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS uncertain_count INTEGER NOT NULL DEFAULT 0"
+                )
+            )
+            await connection.execute(
+                text("ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ")
+            )
+            await connection.execute(
+                text("ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS archived_by VARCHAR(100)")
+            )
+            await connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_campaigns_archived_at ON campaigns (archived_at)"
+                )
+            )
+            await connection.execute(
+                text("ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS idempotency_key VARCHAR(128)")
+            )
+            await connection.execute(
+                text("ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS request_hash VARCHAR(64)")
+            )
+            await connection.execute(
+                text(
+                    "ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS retry_of_run_id INTEGER REFERENCES campaign_runs(id) ON DELETE RESTRICT"
+                )
+            )
+            await connection.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_campaigns_idempotency_key ON campaigns (idempotency_key) WHERE idempotency_key IS NOT NULL"
+                )
+            )
+            await connection.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_campaigns_retry_of_run_id ON campaigns (retry_of_run_id) WHERE retry_of_run_id IS NOT NULL"
+                )
+            )
+            await connection.execute(
+                text("ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS throttled_until TIMESTAMPTZ")
+            )
+            await connection.execute(
+                text("ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS throttle_reason TEXT")
+            )
+            await connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_campaigns_throttled_until ON campaigns (throttled_until)"
+                )
+            )
+            await connection.execute(
+                text(
+                    "ALTER TABLE campaign_deliveries ADD COLUMN IF NOT EXISTS meta_error_code INTEGER"
+                )
+            )
+            await connection.execute(
+                text(
+                    "ALTER TABLE campaign_deliveries ADD COLUMN IF NOT EXISTS meta_error_subcode INTEGER"
+                )
+            )
             await connection.execute(
                 text(
                     "ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS dm_flow_version_id "
